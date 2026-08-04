@@ -1,0 +1,27 @@
+# Dependencies and package-manager files
+node_modules/
+.pnpm-store/
+
+# Build and test outputs
+dist/
+build/
+coverage/
+.turbo/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs/
+
+# OS and editor files
+.DS_Store
+.idea/
+.vscode/
+
+# Generated local assets
+storage/
+tmp/

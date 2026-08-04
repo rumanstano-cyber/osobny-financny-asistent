@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: osobny-financny-asistent-api
+    runtime: docker
+    dockerfilePath: ./apps/api/Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_WEBHOOK_SECRET
+        generateValue: true
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: INTERNAL_CRON_SECRET
+        generateValue: true
