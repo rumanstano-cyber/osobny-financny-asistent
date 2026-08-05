@@ -1,12 +1,12 @@
 import { timingSafeEqual } from 'node:crypto';
 import Fastify from 'fastify';
-import type { Update } from '@grammyjs/types';
 import { config } from './config.js';
 import { currentMonthSummary } from './reports.js';
 import { createTelegramBot } from './telegram.js';
 
 const app = Fastify({ logger: { level: config.NODE_ENV === 'production' ? 'info' : 'debug' } });
 const telegramBot = createTelegramBot();
+type TelegramUpdate = Parameters<typeof telegramBot.handleUpdate>[0];
 
 function hasValidWebhookSecret(candidate: string | undefined): boolean {
   if (!candidate) return false;
@@ -22,13 +22,13 @@ app.post<{ Params: { telegramUserId: string } }>('/internal/reports/monthly/:tel
   return { summary: await currentMonthSummary(request.params.telegramUserId) };
 });
 
-app.post<{ Body: Update }>('/webhooks/telegram', async (request, reply) => {
+app.post<{ Body: unknown }>('/webhooks/telegram', async (request, reply) => {
   const secret = request.headers['x-telegram-bot-api-secret-token'];
   if (typeof secret !== 'string' || !hasValidWebhookSecret(secret)) {
     return reply.code(401).send({ error: 'unauthorized' });
   }
 
-  await telegramBot.handleUpdate(request.body as Update);
+  await telegramBot.handleUpdate(request.body as TelegramUpdate);
   return reply.code(200).send({ ok: true });
 });
 
