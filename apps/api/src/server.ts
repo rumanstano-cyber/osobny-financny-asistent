@@ -1,6 +1,6 @@
 import { timingSafeEqual } from 'node:crypto';
 import Fastify from 'fastify';
-import type { Update } from 'grammy';
+import type { Update } from '@grammyjs/types';
 import { config } from './config.js';
 import { currentMonthSummary } from './reports.js';
 import { createTelegramBot } from './telegram.js';
@@ -28,7 +28,7 @@ app.post<{ Body: Update }>('/webhooks/telegram', async (request, reply) => {
     return reply.code(401).send({ error: 'unauthorized' });
   }
 
-  await telegramBot.handleUpdate(request.body);
+  await telegramBot.handleUpdate(request.body as Update);
   return reply.code(200).send({ ok: true });
 });
 

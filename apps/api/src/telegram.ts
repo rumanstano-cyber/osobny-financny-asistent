@@ -14,7 +14,7 @@ function name(ctx: Context) { return [ctx.from?.first_name, ctx.from?.last_name]
 function receiptCategory(value: string) { const text = value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase(); return categories.find((category) => text.includes(category)) ?? (text.includes('lidl') || text.includes('tesco') ? 'potraviny' : 'ostatne'); }
 
 async function saveTransaction(ctx: Context, text: string): Promise<{ result: RpcResult; label: string; amount: number; currency: 'EUR' | 'CZK' | 'USD' | 'GBP' | 'HUF' | 'PLN' } | null> {
-  if (!ctx.from || !ctx.message) return null;
+  if (!ctx.from || !ctx.message || !ctx.chat) return null;
   const parsed = parseFinancialMessage(text);
   if (!parsed) return null;
   const { data, error } = await supabase.rpc('record_telegram_transaction', { p_telegram_user_id: String(ctx.from.id), p_display_name: name(ctx), p_chat_id: String(ctx.chat.id), p_message_id: String(ctx.message.message_id), p_update_id: String(ctx.update.update_id), p_message_text: text, p_amount_minor: parsed.amountMinor, p_currency_code: parsed.currencyCode, p_transaction_type: parsed.transactionType, p_category_slug: parsed.categorySlug, p_note: parsed.note, p_occurred_at: new Date(ctx.message.date * 1000).toISOString(), p_time_zone: 'Europe/Bratislava' });
@@ -51,9 +51,9 @@ async function handleReceipt(ctx: Context): Promise<void> {
 export function createTelegramBot(): Bot {
   const bot = new Bot(config.TELEGRAM_BOT_TOKEN);
   bot.command('start', (ctx) => ctx.reply('Ahoj! Pošli „Káva 3 €“, hlasovú správu alebo fotku bločku.'));
-  bot.on('message:photo', async (ctx) => { if (ctx.chat.type === 'private') await handleReceipt(ctx); });
-  bot.on('message:voice', async (ctx) => { if (ctx.chat.type !== 'private' || !ctx.message.voice) return; await ctx.reply('🎙️ Prepisujem správu…'); const audio = await downloadTelegramFile(ctx.message.voice.file_id); const text = await transcribeVoice(audio.bytes, audio.path); const saved = await saveTransaction(ctx, text); await ctx.reply(saved ? `✅ Zapísané: ${saved.label} – ${formatAmount(saved.amount, saved.currency)}` : `Nerozumel som: „${text}“`); });
-  bot.on('message:text', async (ctx) => { if (ctx.chat.type !== 'private') return; if (/koľko som minul|stav mojich financií|súhrn/i.test(ctx.message.text)) { await ctx.reply(await currentMonthSummary(String(ctx.from.id))); return; } const saved = await saveTransaction(ctx, ctx.message.text); await ctx.reply(saved ? `✅ Zapísané: ${saved.label} – ${formatAmount(saved.amount, saved.currency)}` : 'Nerozumel som sume. Skús napríklad: Káva 3 €'); });
+  bot.on('message:photo', async (ctx) => { if (ctx.chat?.type === 'private') await handleReceipt(ctx); });
+  bot.on('message:voice', async (ctx) => { if (ctx.chat?.type !== 'private' || !ctx.message.voice) return; await ctx.reply('🎙️ Prepisujem správu…'); const audio = await downloadTelegramFile(ctx.message.voice.file_id); const text = await transcribeVoice(audio.bytes, audio.path); const saved = await saveTransaction(ctx, text); await ctx.reply(saved ? `✅ Zapísané: ${saved.label} – ${formatAmount(saved.amount, saved.currency)}` : `Nerozumel som: „${text}“`); });
+  bot.on('message:text', async (ctx) => { if (ctx.chat?.type !== 'private') return; if (/koľko som minul|stav mojich financií|súhrn/i.test(ctx.message.text)) { await ctx.reply(await currentMonthSummary(String(ctx.from.id))); return; } const saved = await saveTransaction(ctx, ctx.message.text); await ctx.reply(saved ? `✅ Zapísané: ${saved.label} – ${formatAmount(saved.amount, saved.currency)}` : 'Nerozumel som sume. Skús napríklad: Káva 3 €'); });
   bot.catch((error) => console.error('Telegram update failed', { updateId: error.ctx.update.update_id, message: error.message }));
   return bot;
 }
