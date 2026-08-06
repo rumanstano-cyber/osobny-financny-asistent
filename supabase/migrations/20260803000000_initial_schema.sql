@@ -818,9 +818,9 @@ begin
     v_idempotency_key, 'text', extensions.digest(p_message_text, 'sha256'), 'completed', p_occurred_at, now()
   ) returning id into v_message_id;
 
-  select id into v_category_id
-  from public.categories
-  where workspace_id is null and slug = p_category_slug and is_active and not is_archived
+  select c.id into v_category_id
+  from public.categories c
+  where c.workspace_id is null and c.slug = p_category_slug and c.is_active and not c.is_archived
   limit 1;
   if v_category_id is null then
     raise exception 'Unknown system category slug: %', p_category_slug;
