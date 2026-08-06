@@ -22,7 +22,7 @@ app.post<{ Params: { telegramUserId: string } }>('/internal/reports/monthly/:tel
   return { summary: await currentMonthSummary(request.params.telegramUserId) };
 });
 
-app.post<{ Body: unknown }>('/webhooks/telegram', async (request, reply) => {
+app.post<{ Body: unknown }>('/api/telegram/webhook', async (request, reply) => {
   const secret = request.headers['x-telegram-bot-api-secret-token'];
   if (typeof secret !== 'string' || !hasValidWebhookSecret(secret)) {
     return reply.code(401).send({ error: 'unauthorized' });
