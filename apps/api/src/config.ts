@@ -7,7 +7,7 @@ const environmentSchema = z.object({
   SUPABASE_URL: z.string().url(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
   TELEGRAM_BOT_TOKEN: z.string().min(1),
-  TELEGRAM_WEBHOOK_SECRET: z.string().min(24),
+  TELEGRAM_WEBHOOK_SECRET: z.string().min(24).optional(),
   OPENAI_API_KEY: z.string().min(1).optional(),
   INTERNAL_CRON_SECRET: z.string().min(24),
 });
