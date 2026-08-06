@@ -5,19 +5,8 @@ import { createTelegramBot } from './telegram.js';
 
 const app = Fastify({ logger: { level: config.NODE_ENV === 'production' ? 'info' : 'debug' } });
 const telegramBot = createTelegramBot();
+await telegramBot.init();
 type TelegramUpdate = Parameters<typeof telegramBot.handleUpdate>[0];
-let telegramBotInitialization: Promise<unknown> | undefined;
-
-async function ensureTelegramBotInitialized(): Promise<void> {
-  if (telegramBot.botInfo) return;
-  telegramBotInitialization ??= telegramBot.init();
-  try {
-    await telegramBotInitialization;
-  } catch (error) {
-    telegramBotInitialization = undefined;
-    throw error;
-  }
-}
 
 app.get('/health', async () => ({ status: 'ok' }));
 
@@ -27,7 +16,6 @@ app.post<{ Params: { telegramUserId: string } }>('/internal/reports/monthly/:tel
 });
 
 app.post<{ Body: unknown }>('/api/telegram/webhook', async (request, reply) => {
-  await ensureTelegramBotInitialized();
   await telegramBot.handleUpdate(request.body as TelegramUpdate);
   return reply.code(200).send({ ok: true });
 });
