@@ -16,8 +16,18 @@ app.post<{ Params: { telegramUserId: string } }>('/internal/reports/monthly/:tel
 });
 
 app.post<{ Body: unknown }>('/api/telegram/webhook', async (request, reply) => {
-  await telegramBot.handleUpdate(request.body as TelegramUpdate);
-  return reply.code(200).send({ ok: true });
+  // Acknowledge the update before any OCR, AI, or database work. Telegram must
+  // never retry an update just because downstream processing failed or was slow.
+  reply.code(200).send({ ok: true });
+
+  try {
+    void telegramBot.handleUpdate(request.body as TelegramUpdate).catch((error: unknown) => {
+      app.log.error({ error }, 'Telegram update processing failed after acknowledgement');
+    });
+  } catch (error) {
+    // Protect against a synchronous failure while scheduling the bot middleware.
+    app.log.error({ error }, 'Telegram update could not be scheduled');
+  }
 });
 
 try {

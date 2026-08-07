@@ -9,9 +9,24 @@ import { currentMonthSummary } from './reports.js';
 
 type RpcResult = { transaction_id: string; workspace_id: string; was_duplicate: boolean };
 const categories = ['potraviny', 'kava', 'auto', 'byvanie', 'restauracie', 'zabava', 'drogeria', 'elektronika', 'oblecenie', 'zdravie', 'domacnost', 'deti', 'poistenie', 'dovolenka'];
+const processedUpdateIds = new Set<number>();
+const maxTrackedUpdates = 10_000;
 
 function name(ctx: Context) { return [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ') || ctx.from?.username || 'Používateľ'; }
 function receiptCategory(value: string) { const text = value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase(); return categories.find((category) => text.includes(category)) ?? (text.includes('lidl') || text.includes('tesco') ? 'potraviny' : 'ostatne'); }
+
+function claimUpdate(updateId: number): boolean {
+  if (processedUpdateIds.has(updateId)) return false;
+  processedUpdateIds.add(updateId);
+
+  // Keep duplicate protection bounded for a long-running Render instance.
+  if (processedUpdateIds.size > maxTrackedUpdates) {
+    const oldestUpdateId = processedUpdateIds.values().next().value;
+    if (oldestUpdateId !== undefined) processedUpdateIds.delete(oldestUpdateId);
+  }
+
+  return true;
+}
 
 async function saveTransaction(ctx: Context, text: string): Promise<{ result: RpcResult; label: string; amount: number; currency: 'EUR' | 'CZK' | 'USD' | 'GBP' | 'HUF' | 'PLN' } | null> {
   if (!ctx.from || !ctx.message || !ctx.chat) return null;
@@ -53,37 +68,50 @@ export function createTelegramBot(): Bot {
   bot.command('start', (ctx) => ctx.reply('Ahoj! Pošli „Káva 3 €“, hlasovú správu alebo fotku bločku.'));
   bot.on('message', async (ctx) => {
     if (ctx.chat?.type !== 'private') return;
-
-    if (ctx.message.photo) {
-      await handleReceipt(ctx);
+    if (!claimUpdate(ctx.update.update_id)) {
+      console.info('Ignoring duplicate Telegram update', { updateId: ctx.update.update_id });
       return;
     }
 
-    // Voice transcription is intentionally reachable only for media updates.
-    // A text message has neither `voice` nor `audio` and bypasses this branch.
-    const audioMessage = ctx.message.voice ?? ctx.message.audio;
-    if (audioMessage) {
-      await ctx.reply('🎙️ Prepisujem správu…');
-      const audio = await downloadTelegramFile(audioMessage.file_id);
-      const text = await transcribeVoice(audio.bytes, audio.path);
+    try {
+      if (ctx.message.photo) {
+        await handleReceipt(ctx);
+        return;
+      }
+
+      // Voice transcription is intentionally reachable only for media updates.
+      // A text message has neither `voice` nor `audio` and bypasses this branch.
+      const audioMessage = ctx.message.voice ?? ctx.message.audio;
+      if (audioMessage) {
+        await ctx.reply('🎙️ Prepisujem správu…');
+        const audio = await downloadTelegramFile(audioMessage.file_id);
+        const text = await transcribeVoice(audio.bytes, audio.path);
+        const saved = await saveTransaction(ctx, text);
+        await ctx.reply(saved ? `✅ Zapísané: ${saved.label} – ${formatAmount(saved.amount, saved.currency)}` : `Nerozumel som: „${text}“`);
+        return;
+      }
+
+      const text = ctx.message.text;
+      if (!text) {
+        await ctx.reply('Podporujem textové správy, hlasové správy a fotky bločkov.');
+        return;
+      }
+
+      if (/koľko som minul|stav mojich financií|súhrn/i.test(text)) {
+        await ctx.reply(await currentMonthSummary(String(ctx.from.id)));
+        return;
+      }
+
       const saved = await saveTransaction(ctx, text);
-      await ctx.reply(saved ? `✅ Zapísané: ${saved.label} – ${formatAmount(saved.amount, saved.currency)}` : `Nerozumel som: „${text}“`);
-      return;
+      await ctx.reply(saved ? `✅ Zapísané: ${saved.label} – ${formatAmount(saved.amount, saved.currency)}` : 'Nerozumel som sume. Skús napríklad: Káva 3 €');
+    } catch (error) {
+      // The webhook has already been acknowledged; log failures without allowing
+      // them to escape middleware and trigger a Telegram redelivery.
+      console.error('Telegram message processing failed', {
+        updateId: ctx.update.update_id,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
-
-    const text = ctx.message.text;
-    if (!text) {
-      await ctx.reply('Podporujem textové správy, hlasové správy a fotky bločkov.');
-      return;
-    }
-
-    if (/koľko som minul|stav mojich financií|súhrn/i.test(text)) {
-      await ctx.reply(await currentMonthSummary(String(ctx.from.id)));
-      return;
-    }
-
-    const saved = await saveTransaction(ctx, text);
-    await ctx.reply(saved ? `✅ Zapísané: ${saved.label} – ${formatAmount(saved.amount, saved.currency)}` : 'Nerozumel som sume. Skús napríklad: Káva 3 €');
   });
   bot.catch((error) => console.error('Telegram update failed', { updateId: error.ctx.update.update_id, message: error.message }));
   return bot;
