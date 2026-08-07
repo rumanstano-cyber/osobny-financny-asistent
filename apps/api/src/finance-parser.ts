@@ -7,22 +7,6 @@ export type ParsedTransaction = {
   note: string;
 };
 
-const expenseCategories = [
-  { slug: 'potraviny', label: 'Potraviny', terms: ['potraviny', 'lidl', 'kaufland', 'tesco', 'billa', 'coop'] },
-  { slug: 'auto', label: 'Auto', terms: ['benzin', 'nafta', 'palivo', 'tankovanie', 'auto'] },
-  { slug: 'byvanie', label: 'Bývanie', terms: ['najom', 'energie', 'elektrina', 'plyn', 'hypoteka'] },
-  { slug: 'restauracie', label: 'Reštaurácie', terms: ['restauracia', 'obed', 'vecera', 'pizza', 'kava', 'coffee', 'cappuccino', 'espresso', 'kaviaren', 'cafe', 'starbucks', 'costa'] },
-  { slug: 'zabava', label: 'Zábava', terms: ['kino', 'netflix', 'zabava', 'koncert'] },
-  { slug: 'drogeria', label: 'Drogéria', terms: ['drogeria', 'dm', 'teta'] },
-  { slug: 'elektronika', label: 'Elektronika', terms: ['telefon', 'televizor', 'notebook', 'elektronika'] },
-  { slug: 'oblecenie', label: 'Oblečenie', terms: ['oblecenie', 'tricko', 'nohavice', 'topanky'] },
-  { slug: 'zdravie', label: 'Zdravie', terms: ['lekar', 'lekaren', 'zdravie', 'zubar'] },
-  { slug: 'domacnost', label: 'Domácnosť', terms: ['domacnost', 'nabytok'] },
-  { slug: 'deti', label: 'Deti', terms: ['deti', 'dieta', 'skolka'] },
-  { slug: 'poistenie', label: 'Poistenie', terms: ['poistenie'] },
-  { slug: 'dovolenka', label: 'Dovolenka', terms: ['dovolenka', 'hotel', 'letenka'] },
-];
-
 function normalize(value: string): string {
   return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 }
@@ -67,8 +51,7 @@ export function parseFinancialMessage(text: string): ParsedTransaction | null {
     ? (normalized.includes('vyplata') || normalized.includes('plat')
       ? { slug: 'vyplata', label: 'Výplata' }
       : { slug: 'iny-prijem', label: 'Príjem' })
-    : expenseCategories.find((candidate) => candidate.terms.some((term) => normalized.includes(term)))
-      ?? { slug: 'ostatne', label: 'Ostatné' };
+    : { slug: 'ostatne', label: 'Ostatné' };
 
   const note = text
     .replace(/(?:€\s*)?\d{1,12}(?:[\s.,]\d{1,2})?\s*(?:€|eur|kč|czk|\$|usd|£|gbp|huf|ft|pln)?/iu, '')

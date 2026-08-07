@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { Bot, type Context } from 'grammy';
 import { extractReceipt, transcribeVoice } from './ai.js';
+import { categorizeExpense, type CategorizationInput } from './category-categorizer.js';
 import { config } from './config.js';
 import { readEkasaReceiptQr } from './ekasa-qr.js';
 import { formatAmount, parseFinancialMessage } from './finance-parser.js';
@@ -27,14 +28,17 @@ function claimUpdate(updateId: number): boolean {
   return true;
 }
 
-async function saveTransaction(ctx: Context, text: string): Promise<{ result: RpcResult; label: string; amount: number; currency: 'EUR' | 'CZK' | 'USD' | 'GBP' | 'HUF' | 'PLN' } | null> {
+async function saveTransaction(ctx: Context, text: string, categorizationInput: CategorizationInput = {}): Promise<{ result: RpcResult; label: string; amount: number; currency: 'EUR' | 'CZK' | 'USD' | 'GBP' | 'HUF' | 'PLN' } | null> {
   if (!ctx.from || !ctx.message || !ctx.chat) return null;
   const parsed = parseFinancialMessage(text);
   if (!parsed) return null;
-  const { data, error } = await supabase.rpc('record_telegram_transaction', { p_telegram_user_id: String(ctx.from.id), p_display_name: name(ctx), p_chat_id: String(ctx.chat.id), p_message_id: String(ctx.message.message_id), p_update_id: String(ctx.update.update_id), p_message_text: text, p_amount_minor: parsed.amountMinor, p_currency_code: parsed.currencyCode, p_transaction_type: parsed.transactionType, p_category_slug: parsed.categorySlug, p_note: parsed.note, p_occurred_at: new Date(ctx.message.date * 1000).toISOString(), p_time_zone: 'Europe/Bratislava' });
+  const category = parsed.transactionType === 'expense'
+    ? await categorizeExpense({ messageText: text, ...categorizationInput })
+    : { slug: parsed.categorySlug, label: parsed.categoryLabel };
+  const { data, error } = await supabase.rpc('record_telegram_transaction', { p_telegram_user_id: String(ctx.from.id), p_display_name: name(ctx), p_chat_id: String(ctx.chat.id), p_message_id: String(ctx.message.message_id), p_update_id: String(ctx.update.update_id), p_message_text: text, p_amount_minor: parsed.amountMinor, p_currency_code: parsed.currencyCode, p_transaction_type: parsed.transactionType, p_category_slug: category.slug, p_note: parsed.note, p_occurred_at: new Date(ctx.message.date * 1000).toISOString(), p_time_zone: 'Europe/Bratislava' });
   if (error) throw new Error(error.message);
   const result = (data as RpcResult[] | null)?.[0];
-  return result ? { result, label: parsed.categoryLabel, amount: parsed.amountMinor, currency: parsed.currencyCode } : null;
+  return result ? { result, label: category.label, amount: parsed.amountMinor, currency: parsed.currencyCode } : null;
 }
 
 async function handleReceipt(ctx: Context): Promise<void> {
@@ -65,7 +69,7 @@ async function handleReceipt(ctx: Context): Promise<void> {
   if (!extraction.amountMinor) { await ctx.reply('Bloček sa uložil až po doplnení OCR podpory; sumu sa nepodarilo spoľahlivo nájsť.'); return; }
   const synthetic = `${extraction.merchantName ?? 'Bloček'} ${formatAmount(extraction.amountMinor, 'EUR')}`;
   if (ekasa) console.log('eKasa amount before transaction save', { amountMinor: ekasa.amountMinor, synthetic });
-  const saved = await saveTransaction(ctx, synthetic);
+  const saved = await saveTransaction(ctx, synthetic, { merchantName: extraction.merchantName, receiptText: extraction.ocrText });
   if (!saved || saved.result.was_duplicate) return;
   if (ekasa) console.log('eKasa amount after transaction save', { parsedAmountMinor: saved.amount, transactionId: saved.result.transaction_id });
   const { data: transaction } = await supabase.from('financial_transactions').select('created_by_user_id').eq('id', saved.result.transaction_id).single();
