@@ -1,5 +1,14 @@
-import jsQR from 'jsqr';
-import sharp from 'sharp';
+import jsQRImport, { type Options, type QRCode } from 'jsqr';
+import { Jimp } from 'jimp';
+
+// jsQR publishes CommonJS runtime code with an ESM-incompatible declaration
+// under NodeNext. Keep the runtime import and make its callable contract explicit.
+const jsQR = jsQRImport as unknown as (
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  options?: Options,
+) => QRCode | null;
 
 export type EkasaReceipt = {
   merchantName: string;
@@ -142,12 +151,13 @@ async function fetchEkasaReceipt(payload: string, offlinePayload: JsonRecord | n
 
 async function decodeQrPayload(image: Buffer): Promise<string | null> {
   try {
-    const { data, info } = await sharp(image, { limitInputPixels: 24_000_000 })
-      .rotate()
-      .ensureAlpha()
-      .raw()
-      .toBuffer({ resolveWithObject: true });
-    const result = jsQR(new Uint8ClampedArray(data.buffer, data.byteOffset, data.byteLength), info.width, info.height, {
+    const decoded = await Jimp.read(image);
+    if (decoded.bitmap.width * decoded.bitmap.height > 24_000_000) {
+      console.warn('Receipt QR image exceeds pixel limit');
+      return null;
+    }
+    const pixels = decoded.bitmap.data;
+    const result = jsQR(new Uint8ClampedArray(pixels.buffer, pixels.byteOffset, pixels.byteLength), decoded.bitmap.width, decoded.bitmap.height, {
       inversionAttempts: 'attemptBoth',
     });
     return result?.data.trim() || null;
