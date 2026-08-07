@@ -64,8 +64,10 @@ async function handleReceipt(ctx: Context): Promise<void> {
 
   if (!extraction.amountMinor) { await ctx.reply('Bloček sa uložil až po doplnení OCR podpory; sumu sa nepodarilo spoľahlivo nájsť.'); return; }
   const synthetic = `${extraction.merchantName ?? 'Bloček'} ${formatAmount(extraction.amountMinor, 'EUR')}`;
+  if (ekasa) console.log('eKasa amount before transaction save', { amountMinor: ekasa.amountMinor, synthetic });
   const saved = await saveTransaction(ctx, synthetic);
   if (!saved || saved.result.was_duplicate) return;
+  if (ekasa) console.log('eKasa amount after transaction save', { parsedAmountMinor: saved.amount, transactionId: saved.result.transaction_id });
   const { data: transaction } = await supabase.from('financial_transactions').select('created_by_user_id').eq('id', saved.result.transaction_id).single();
   if (!transaction) throw new Error('Transaction lookup failed');
   const key = `${saved.result.workspace_id}/${ctx.message.message_id}-${hash.slice(0, 16)}.jpg`;

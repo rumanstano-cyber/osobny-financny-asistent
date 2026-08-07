@@ -54,7 +54,7 @@ function textValue(value: unknown): string | null {
 function parseDate(value: unknown): string | null {
   const text = textValue(value);
   if (!text) return null;
-  const slovakDate = text.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+  const slovakDate = text.match(/^(\d{2})\.(\d{2})\.(\d{4})(?:\s+\d{2}:\d{2}:\d{2})?$/);
   if (slovakDate) return `${slovakDate[3]}-${slovakDate[2]}-${slovakDate[1]}`;
   const isoDate = text.match(/^(\d{4}-\d{2}-\d{2})/);
   return isoDate ? isoDate[1] : null;
@@ -71,11 +71,18 @@ function parseAmountMinor(value: unknown, key: string): number | null {
   return Number.isSafeInteger(minor) && minor > 0 ? minor : null;
 }
 
-function findAmountMinor(value: unknown): number | null {
-  const amountKeys = ['amountminor', 'totalminor', 'totalamountminor', 'totalprice', 'amount', 'totalamount', 'total', 'sum', 'price'];
-  for (const key of amountKeys) {
-    const raw = findValue(value, [key]);
-    const amount = parseAmountMinor(raw, key);
+function receiptTotalMinor(receipt: unknown): number | null {
+  if (!isRecord(receipt)) return null;
+
+  // The current eKasa shape uses `totalAmount` for the complete amount due
+  // (including VAT). Older responses expose the same receipt total as
+  // `totalPrice`. Do not inspect nested `payments`: tendered cash can be
+  // greater than the amount due when change was issued.
+  for (const [key, value] of [
+    ['totalamount', receipt.totalAmount],
+    ['totalprice', receipt.totalPrice],
+  ] as const) {
+    const amount = parseAmountMinor(value, key);
     if (amount !== null) return amount;
   }
   return null;
@@ -93,7 +100,7 @@ function extractReceipt(value: unknown, rawPayload: string): EkasaReceipt | null
       ?? findValue(receipt, ['merchantico', 'organizationico', 'ico', 'companyid']),
   );
   const receiptDate = parseDate(findValue(receipt, ['receiptdate', 'issuedat', 'issueddate', 'date', 'createdat']));
-  const amountMinor = findAmountMinor(receipt);
+  const amountMinor = receiptTotalMinor(receipt);
 
   // Do not guess from incomplete QR data. Vision remains the fallback unless
   // eKasa supplied the three values needed for a reliable financial record.
@@ -142,7 +149,9 @@ async function fetchEkasaReceipt(payload: string, offlinePayload: JsonRecord | n
       : await fetch(payload, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(8_000) });
 
     if (!response.ok || !response.headers.get('content-type')?.includes('application/json')) return null;
-    return await response.json();
+    const responseJson: unknown = await response.json();
+    console.log('eKasa receipt API response', JSON.stringify(responseJson));
+    return responseJson;
   } catch (error) {
     console.warn('eKasa QR lookup failed', { error: error instanceof Error ? error.message : String(error) });
     return null;
