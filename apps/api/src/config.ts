@@ -13,6 +13,9 @@ const environmentSchema = z.object({
   TELEGRAM_WEBHOOK_SECRET: z.string().min(24).optional(),
   OPENAI_API_KEY: z.string().min(1).optional(),
   INTERNAL_CRON_SECRET: z.string().min(24),
+  RESEND_API_KEY: z.string().min(1).optional(),
+  EMAIL_FROM: z.string().email().optional(),
+  EMAIL_TO: z.string().min(3).optional(),
 });
 
 export const config = environmentSchema.parse(process.env);

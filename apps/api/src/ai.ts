@@ -82,3 +82,14 @@ export async function monthlyCommentary(summary: string): Promise<string> {
   const result = await requireClient().chat.completions.create({ model: 'gpt-4o-mini', messages: [{ role: 'system', content: 'You are a cautious personal-finance assistant. Write a short Slovak summary, never investment advice.' }, { role: 'user', content: summary }] });
   return result.choices[0]?.message.content?.trim() ?? '';
 }
+
+export async function monthlyReportCommentary(summary: string): Promise<string> {
+  const result = await requireClient().chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      { role: 'system', content: 'Si opatrný osobný finančný asistent. Odpovedz presne dvoma stručnými vetami po slovensky: jedna veta zhodnotí výdavky a druhá ponúkne neinvestičné praktické odporúčanie. Nevymýšľaj čísla ani neposkytuj investičné poradenstvo.' },
+      { role: 'user', content: summary },
+    ],
+  });
+  return result.choices[0]?.message.content?.trim() ?? '';
+}
