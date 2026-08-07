@@ -8,11 +8,10 @@ export type ParsedTransaction = {
 };
 
 const expenseCategories = [
-  { slug: 'kava', label: 'Káva', terms: ['kava', 'coffee', 'cappuccino', 'espresso'] },
   { slug: 'potraviny', label: 'Potraviny', terms: ['potraviny', 'lidl', 'kaufland', 'tesco', 'billa', 'coop'] },
   { slug: 'auto', label: 'Auto', terms: ['benzin', 'nafta', 'palivo', 'tankovanie', 'auto'] },
   { slug: 'byvanie', label: 'Bývanie', terms: ['najom', 'energie', 'elektrina', 'plyn', 'hypoteka'] },
-  { slug: 'restauracie', label: 'Reštaurácie', terms: ['restauracia', 'obed', 'vecera', 'pizza'] },
+  { slug: 'restauracie', label: 'Reštaurácie', terms: ['restauracia', 'obed', 'vecera', 'pizza', 'kava', 'coffee', 'cappuccino', 'espresso', 'kaviaren', 'cafe', 'starbucks', 'costa'] },
   { slug: 'zabava', label: 'Zábava', terms: ['kino', 'netflix', 'zabava', 'koncert'] },
   { slug: 'drogeria', label: 'Drogéria', terms: ['drogeria', 'dm', 'teta'] },
   { slug: 'elektronika', label: 'Elektronika', terms: ['telefon', 'televizor', 'notebook', 'elektronika'] },

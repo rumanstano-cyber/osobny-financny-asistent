@@ -244,7 +244,6 @@ create index categories_workspace_parent_active_idx on public.categories (worksp
 
 insert into public.categories (kind, name, slug, transaction_type, icon) values
   ('system', 'Potraviny', 'potraviny', 'expense', 'shopping-cart'),
-  ('system', 'Káva', 'kava', 'expense', 'coffee'),
   ('system', 'Auto', 'auto', 'expense', 'car'),
   ('system', 'Bývanie', 'byvanie', 'expense', 'home'),
   ('system', 'Reštaurácie', 'restauracie', 'expense', 'utensils'),
