@@ -51,9 +51,40 @@ async function handleReceipt(ctx: Context): Promise<void> {
 export function createTelegramBot(): Bot {
   const bot = new Bot(config.TELEGRAM_BOT_TOKEN);
   bot.command('start', (ctx) => ctx.reply('Ahoj! Pošli „Káva 3 €“, hlasovú správu alebo fotku bločku.'));
-  bot.on('message:photo', async (ctx) => { if (ctx.chat?.type === 'private') await handleReceipt(ctx); });
-  bot.on('message:voice', async (ctx) => { if (ctx.chat?.type !== 'private' || !ctx.message.voice) return; await ctx.reply('🎙️ Prepisujem správu…'); const audio = await downloadTelegramFile(ctx.message.voice.file_id); const text = await transcribeVoice(audio.bytes, audio.path); const saved = await saveTransaction(ctx, text); await ctx.reply(saved ? `✅ Zapísané: ${saved.label} – ${formatAmount(saved.amount, saved.currency)}` : `Nerozumel som: „${text}“`); });
-  bot.on('message:text', async (ctx) => { if (ctx.chat?.type !== 'private') return; if (/koľko som minul|stav mojich financií|súhrn/i.test(ctx.message.text)) { await ctx.reply(await currentMonthSummary(String(ctx.from.id))); return; } const saved = await saveTransaction(ctx, ctx.message.text); await ctx.reply(saved ? `✅ Zapísané: ${saved.label} – ${formatAmount(saved.amount, saved.currency)}` : 'Nerozumel som sume. Skús napríklad: Káva 3 €'); });
+  bot.on('message', async (ctx) => {
+    if (ctx.chat?.type !== 'private') return;
+
+    if (ctx.message.photo) {
+      await handleReceipt(ctx);
+      return;
+    }
+
+    // Voice transcription is intentionally reachable only for media updates.
+    // A text message has neither `voice` nor `audio` and bypasses this branch.
+    const audioMessage = ctx.message.voice ?? ctx.message.audio;
+    if (audioMessage) {
+      await ctx.reply('🎙️ Prepisujem správu…');
+      const audio = await downloadTelegramFile(audioMessage.file_id);
+      const text = await transcribeVoice(audio.bytes, audio.path);
+      const saved = await saveTransaction(ctx, text);
+      await ctx.reply(saved ? `✅ Zapísané: ${saved.label} – ${formatAmount(saved.amount, saved.currency)}` : `Nerozumel som: „${text}“`);
+      return;
+    }
+
+    const text = ctx.message.text;
+    if (!text) {
+      await ctx.reply('Podporujem textové správy, hlasové správy a fotky bločkov.');
+      return;
+    }
+
+    if (/koľko som minul|stav mojich financií|súhrn/i.test(text)) {
+      await ctx.reply(await currentMonthSummary(String(ctx.from.id)));
+      return;
+    }
+
+    const saved = await saveTransaction(ctx, text);
+    await ctx.reply(saved ? `✅ Zapísané: ${saved.label} – ${formatAmount(saved.amount, saved.currency)}` : 'Nerozumel som sume. Skús napríklad: Káva 3 €');
+  });
   bot.catch((error) => console.error('Telegram update failed', { updateId: error.ctx.update.update_id, message: error.message }));
   return bot;
 }
