@@ -5,6 +5,7 @@ import { categorizeExpense, type CategorizationInput } from './category-categori
 import { config } from './config.js';
 import { readEkasaReceiptQr } from './ekasa-qr.js';
 import { formatAmount, parseFinancialMessage } from './finance-parser.js';
+import { optimizeReceiptImage } from './receipt-image.js';
 import { supabase } from './supabase.js';
 import { downloadTelegramFile } from './telegram-files.js';
 import { currentMonthSummary } from './reports.js';
@@ -46,16 +47,17 @@ async function handleReceipt(ctx: Context): Promise<void> {
   if (!photo || !ctx.from || !ctx.message) return;
   await ctx.reply('🔎 Čítam bloček…');
   const file = await downloadTelegramFile(photo.file_id);
+  const receiptImage = await optimizeReceiptImage(file.bytes);
 
-  // Persist the original image before QR/OCR work. The temporary object remains
+  // Persist the optimized JPEG before QR/OCR work. The temporary object remains
   // private and is moved to the permanent workspace key after the transaction
   // has resolved the workspace identity.
-  const hash = createHash('sha256').update(file.bytes).digest('hex');
+  const hash = createHash('sha256').update(receiptImage.bytes).digest('hex');
   const temporaryKey = `incoming/telegram/${ctx.update.update_id}-${hash.slice(0, 16)}.jpg`;
-  const upload = await supabase.storage.from('ofa-receipts').upload(temporaryKey, file.bytes, { contentType: 'image/jpeg', upsert: false });
+  const upload = await supabase.storage.from('ofa-receipts').upload(temporaryKey, receiptImage.bytes, { contentType: 'image/jpeg', upsert: false });
   if (upload.error) throw new Error(upload.error.message);
 
-  const ekasa = await readEkasaReceiptQr(file.bytes);
+  const ekasa = await readEkasaReceiptQr(receiptImage.bytes);
   const extraction = ekasa
     ? {
       merchantName: ekasa.merchantName,
@@ -64,7 +66,7 @@ async function handleReceipt(ctx: Context): Promise<void> {
       currencyCode: 'EUR' as const,
       ocrText: JSON.stringify({ source: 'ekasa_qr', merchantIco: ekasa.merchantIco, qrPayload: ekasa.rawPayload }),
     }
-    : await extractReceipt(file.bytes, 'image/jpeg');
+    : await extractReceipt(receiptImage.bytes, 'image/jpeg');
 
   if (!extraction.amountMinor) { await ctx.reply('Bloček sa uložil až po doplnení OCR podpory; sumu sa nepodarilo spoľahlivo nájsť.'); return; }
   const synthetic = `${extraction.merchantName ?? 'Bloček'} ${formatAmount(extraction.amountMinor, 'EUR')}`;
@@ -78,7 +80,7 @@ async function handleReceipt(ctx: Context): Promise<void> {
   const move = await supabase.storage.from('ofa-receipts').move(temporaryKey, key);
   if (move.error) throw new Error(move.error.message);
   const sha256 = `\\x${hash}`;
-  const { data: storedFile, error: storedFileError } = await supabase.from('stored_files').insert({ workspace_id: saved.result.workspace_id, storage_provider: 'supabase_storage', storage_key: key, content_type: 'image/jpeg', byte_size: file.bytes.length, sha256, uploaded_by_user_id: transaction.created_by_user_id }).select('id').single();
+  const { data: storedFile, error: storedFileError } = await supabase.from('stored_files').insert({ workspace_id: saved.result.workspace_id, storage_provider: 'supabase_storage', storage_key: key, content_type: 'image/jpeg', byte_size: receiptImage.bytes.length, sha256, uploaded_by_user_id: transaction.created_by_user_id }).select('id').single();
   if (storedFileError || !storedFile) throw new Error(storedFileError?.message ?? 'Receipt file metadata failed');
   const { data: receipt, error: receiptError } = await supabase.from('ofa_receipts').insert({ workspace_id: saved.result.workspace_id, file_id: storedFile.id, uploaded_by_user_id: transaction.created_by_user_id, status: 'completed', merchant_name: extraction.merchantName, receipt_date: extraction.receiptDate, total_amount_minor: extraction.amountMinor, currency_code: 'EUR', ocr_text: extraction.ocrText, ocr_language: 'sk' }).select('id').single();
   if (receiptError || !receipt) throw new Error(receiptError?.message ?? 'Receipt metadata failed');
