@@ -1,13 +1,21 @@
 services:
   - type: web
     name: osobny-financny-asistent-api
-    runtime: docker
-    dockerfilePath: ./apps/api/Dockerfile
+    runtime: node
+    plan: free
+    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm build
+    startCommand: pnpm start:api
     healthCheckPath: /health
     autoDeploy: true
     envVars:
       - key: NODE_ENV
         value: production
+      - key: NODE_VERSION
+        value: 22.14.0
+      - key: BASE_URL
+        sync: false
+      - key: REGISTER_TELEGRAM_WEBHOOK
+        value: true
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
