@@ -92,6 +92,30 @@ async function handleReceipt(ctx: Context): Promise<void> {
 export function createTelegramBot(): Bot {
   const bot = new Bot(config.TELEGRAM_BOT_TOKEN);
   bot.command('start', (ctx) => ctx.reply('Ahoj! Pošli „Káva 3 €“, hlasovú správu alebo fotku bločku.'));
+  bot.command('link', async (ctx) => {
+    if (!ctx.from) return;
+    const code = ctx.match.trim();
+    if (!code) {
+      await ctx.reply('Vygeneruj si párovací kód vo webovom prehľade a pošli mi: /link TVOJ_KÓD');
+      return;
+    }
+
+    try {
+      const { error } = await supabase.rpc('consume_telegram_link_code', {
+        p_telegram_user_id: String(ctx.from.id),
+        p_display_name: name(ctx),
+        p_code: code,
+      });
+      if (error) throw new Error(error.message);
+      await ctx.reply('✅ Telegram účet je prepojený s webovým prehľadom.');
+    } catch (error) {
+      console.error('Telegram account linking failed', {
+        telegramUserId: ctx.from.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      await ctx.reply('Párovací kód je neplatný alebo už vypršal. Vygeneruj nový kód vo webovom prehľade.');
+    }
+  });
   bot.on('message', async (ctx) => {
     if (ctx.chat?.type !== 'private') return;
     if (!claimUpdate(ctx.update.update_id)) {

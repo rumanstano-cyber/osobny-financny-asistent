@@ -28,3 +28,18 @@ services:
         sync: false
       - key: INTERNAL_CRON_SECRET
         generateValue: true
+  - type: web
+    name: osobny-financny-asistent-web
+    runtime: static
+    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm build:web
+    staticPublishPath: ./apps/web/dist
+    autoDeploy: true
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_SUPABASE_URL
+        sync: false
+      - key: VITE_SUPABASE_PUBLISHABLE_KEY
+        sync: false

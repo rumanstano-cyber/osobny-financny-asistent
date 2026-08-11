@@ -9,7 +9,9 @@
   },
   "scripts": {
     "dev:api": "pnpm --filter @ofa/api dev",
+    "dev:web": "pnpm --filter @ofa/web dev",
     "build": "pnpm --filter @ofa/api build",
+    "build:web": "pnpm --filter @ofa/web build",
     "start:api": "pnpm --filter @ofa/api start",
     "typecheck": "pnpm --filter @ofa/api typecheck"
   },
