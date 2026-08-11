@@ -11,10 +11,50 @@ import { downloadTelegramFile } from './telegram-files.js';
 import { currentMonthSummary } from './reports.js';
 
 type RpcResult = { transaction_id: string; workspace_id: string; was_duplicate: boolean };
+type TelegramEmailProfile = { user_id: string; email: string | null };
 const processedUpdateIds = new Set<number>();
 const maxTrackedUpdates = 10_000;
 
 function name(ctx: Context) { return [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ') || ctx.from?.username || 'Používateľ'; }
+
+function isEmailAddress(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+async function ensureTelegramEmailProfile(ctx: Context): Promise<TelegramEmailProfile | null> {
+  if (!ctx.from) return null;
+  const { data, error } = await supabase.rpc('ensure_telegram_email_profile', {
+    p_telegram_user_id: String(ctx.from.id),
+    p_display_name: name(ctx),
+  });
+  if (error) throw new Error(error.message);
+  return (data as TelegramEmailProfile[] | null)?.[0] ?? null;
+}
+
+async function requireEmailBeforeFeatures(ctx: Context): Promise<boolean> {
+  const profile = await ensureTelegramEmailProfile(ctx);
+  if (!profile) return false;
+  if (profile.email) return true;
+
+  const text = ctx.message?.text?.trim() ?? '';
+  if (isEmailAddress(text)) {
+    const { error } = await supabase.rpc('set_telegram_user_email', {
+      p_telegram_user_id: String(ctx.from!.id),
+      p_display_name: name(ctx),
+      p_email: text,
+    });
+    if (error) {
+      console.warn('Telegram e-mail collection failed', { telegramUserId: ctx.from!.id, error: error.message });
+      await ctx.reply('E-mail sa nepodarilo uložiť. Skontroluj jeho formát alebo použi inú adresu.');
+      return false;
+    }
+    await ctx.reply('✅ E-mail je uložený. Teraz môžeš poslať výdavok, fotku bločku alebo sa opýtať na finančný prehľad.');
+    return false;
+  }
+
+  await ctx.reply('Pred použitím bota potrebujem tvoju e-mailovú adresu. Pošli ju prosím v tvare meno@example.com.');
+  return false;
+}
 
 function claimUpdate(updateId: number): boolean {
   if (processedUpdateIds.has(updateId)) return false;
@@ -91,16 +131,25 @@ async function handleReceipt(ctx: Context): Promise<void> {
 
 export function createTelegramBot(): Bot {
   const bot = new Bot(config.TELEGRAM_BOT_TOKEN);
-  bot.command('start', (ctx) => ctx.reply('Ahoj! Pošli „Káva 3 €“, hlasovú správu alebo fotku bločku.'));
+  bot.command('start', async (ctx) => {
+    try {
+      if (await requireEmailBeforeFeatures(ctx)) {
+        await ctx.reply('Ahoj! Pošli „Káva 3 €“, hlasovú správu alebo fotku bločku.');
+      }
+    } catch (error) {
+      console.error('Telegram onboarding failed', { telegramUserId: ctx.from?.id, error: error instanceof Error ? error.message : String(error) });
+      await ctx.reply('Onboarding sa nepodarilo pripraviť. Skús to prosím o chvíľu znova.');
+    }
+  });
   bot.command('link', async (ctx) => {
     if (!ctx.from) return;
-    const code = ctx.match.trim();
-    if (!code) {
-      await ctx.reply('Vygeneruj si párovací kód vo webovom prehľade a pošli mi: /link TVOJ_KÓD');
-      return;
-    }
-
     try {
+      if (!(await requireEmailBeforeFeatures(ctx))) return;
+      const code = ctx.match.trim();
+      if (!code) {
+        await ctx.reply('Vygeneruj si párovací kód vo webovom prehľade a pošli mi: /link TVOJ_KÓD');
+        return;
+      }
       const { error } = await supabase.rpc('consume_telegram_link_code', {
         p_telegram_user_id: String(ctx.from.id),
         p_display_name: name(ctx),
@@ -124,6 +173,8 @@ export function createTelegramBot(): Bot {
     }
 
     try {
+      if (!(await requireEmailBeforeFeatures(ctx))) return;
+
       if (ctx.message.photo) {
         await handleReceipt(ctx);
         return;
