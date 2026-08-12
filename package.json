@@ -13,6 +13,7 @@
     "build": "pnpm --filter @ofa/api build",
     "build:web": "pnpm --filter @ofa/web build",
     "start:api": "pnpm --filter @ofa/api start",
+    "verify:telegram-env": "pnpm --filter @ofa/api verify:telegram-env",
     "typecheck": "pnpm --filter @ofa/api typecheck"
   },
   "devDependencies": {
