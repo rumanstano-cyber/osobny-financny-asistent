@@ -1,16 +1,32 @@
 import { config as loadDotenv } from 'dotenv';
-import { resolve } from 'node:path';
+import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
 import { z } from 'zod';
 
-// pnpm runs this workspace with apps/api as the current directory. Load the
-// repository-level .env explicitly while preserving injected production values.
-loadDotenv({ path: resolve(process.cwd(), '../../.env') });
+// Resolve from this source file, not process.cwd(): pnpm, Render, and direct
+// Node invocations can each use a different working directory.
+const apiDirectory = dirname(fileURLToPath(import.meta.url));
+export const rootEnvPath = resolve(apiDirectory, '../../..', '.env');
+loadDotenv({ path: rootEnvPath });
 
-const telegramToken = process.env.TELEGRAM_BOT_TOKEN?.trim();
+function normalizeSecret(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  return value.trim().replace(/^(?:"|')+|(?:"|')+$/g, '').trim();
+}
+
+const telegramToken = normalizeSecret(process.env.TELEGRAM_BOT_TOKEN);
 if (!telegramToken || telegramToken === 'VLOZ_SEM_TVOJ_TOKEN') {
   console.error('CHYBA: Vlože svoj skutočný Telegram token do .env súboru.');
   process.exit(1);
 }
+process.env.TELEGRAM_BOT_TOKEN = telegramToken;
+
+console.info('Environment configuration loaded', {
+  envFile: rootEnvPath,
+  telegramTokenLength: telegramToken.length,
+  telegramTokenSha256Prefix: createHash('sha256').update(telegramToken).digest('hex').slice(0, 12),
+});
 
 const environmentSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
