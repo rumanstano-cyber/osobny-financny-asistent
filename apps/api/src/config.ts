@@ -1,4 +1,11 @@
+import 'dotenv/config';
 import { z } from 'zod';
+
+const telegramToken = process.env.TELEGRAM_BOT_TOKEN?.trim();
+if (!telegramToken || telegramToken === 'VLOZ_SEM_TVOJ_TOKEN') {
+  console.error('CHYBA: Vlože svoj skutočný Telegram token do .env súboru.');
+  process.exit(1);
+}
 
 const environmentSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
