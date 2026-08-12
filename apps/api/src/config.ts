@@ -1,5 +1,10 @@
-import 'dotenv/config';
+import { config as loadDotenv } from 'dotenv';
+import { resolve } from 'node:path';
 import { z } from 'zod';
+
+// pnpm runs this workspace with apps/api as the current directory. Load the
+// repository-level .env explicitly while preserving injected production values.
+loadDotenv({ path: resolve(process.cwd(), '../../.env') });
 
 const telegramToken = process.env.TELEGRAM_BOT_TOKEN?.trim();
 if (!telegramToken || telegramToken === 'VLOZ_SEM_TVOJ_TOKEN') {
@@ -14,7 +19,7 @@ const environmentSchema = z.object({
   BASE_URL: z.string().trim().url().optional(),
   REGISTER_TELEGRAM_WEBHOOK: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
   SUPABASE_URL: z.string().trim().url().refine(
-    (value) => new URL(value).protocol === 'https:' && Boolean(new URL(value).hostname),
+    (value) => value.startsWith('https://') && value.length > 'https://'.length,
     'SUPABASE_URL must be a complete HTTPS URL, for example https://your-project.supabase.co',
   ),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
