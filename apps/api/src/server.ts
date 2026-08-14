@@ -6,9 +6,31 @@ import { createTelegramBot } from './telegram.js';
 
 const app = Fastify({ logger: { level: config.NODE_ENV === 'production' ? 'info' : 'debug' } });
 const telegramBot = createTelegramBot();
-await telegramBot.init();
-startMonthlyReportScheduler(telegramBot);
 type TelegramUpdate = Parameters<typeof telegramBot.handleUpdate>[0];
+
+let telegramInitialization: Promise<void> | null = null;
+let monthlySchedulerStarted = false;
+
+/**
+ * Telegram's getMe call is external I/O. Do not let a temporary Telegram
+ * outage or a Render secret mistake prevent the web service from listening on
+ * its assigned port. Failed attempts are retried by the first webhook update.
+ */
+async function ensureTelegramBotInitialized(): Promise<void> {
+  if (!telegramInitialization) {
+    telegramInitialization = telegramBot.init().catch((error: unknown) => {
+      telegramInitialization = null;
+      throw error;
+    });
+  }
+  await telegramInitialization;
+}
+
+function startSchedulerOnce(): void {
+  if (monthlySchedulerStarted) return;
+  startMonthlyReportScheduler(telegramBot);
+  monthlySchedulerStarted = true;
+}
 
 function isAllowedCorsOrigin(origin: string): boolean {
   try {
@@ -54,7 +76,10 @@ app.post<{ Body: unknown }>('/api/telegram/webhook', async (request, reply) => {
   reply.code(200).send({ ok: true });
 
   try {
-    void telegramBot.handleUpdate(request.body as TelegramUpdate).catch((error: unknown) => {
+    void ensureTelegramBotInitialized().then(() => {
+      startSchedulerOnce();
+      return telegramBot.handleUpdate(request.body as TelegramUpdate);
+    }).catch((error: unknown) => {
       app.log.error({ error }, 'Telegram update processing failed after acknowledgement');
     });
   } catch (error) {
@@ -67,7 +92,14 @@ try {
   await app.listen({ port: config.PORT, host: config.HOST });
   app.log.info({ baseUrl: config.BASE_URL, port: config.PORT }, 'Server is listening');
 
-  if (config.REGISTER_TELEGRAM_WEBHOOK) {
+  try {
+    await ensureTelegramBotInitialized();
+    startSchedulerOnce();
+  } catch (error) {
+    app.log.error({ error }, 'Telegram bot initialization failed; HTTP service remains available and will retry on a webhook update');
+  }
+
+  if (config.REGISTER_TELEGRAM_WEBHOOK && telegramInitialization) {
     if (!config.BASE_URL.startsWith('https://')) {
       app.log.warn({ baseUrl: config.BASE_URL }, 'Telegram webhook was not registered because BASE_URL must use HTTPS');
     } else {
