@@ -22,6 +22,13 @@ if (!telegramToken || telegramToken === 'VLOZ_SEM_TVOJ_TOKEN') {
 }
 process.env.TELEGRAM_BOT_TOKEN = telegramToken;
 
+// Keep the API key path consistent with the Telegram token path. This also
+// protects local .env values copied from dashboards against surrounding spaces
+// or quotation marks, while Render-provided environment variables continue to
+// work unchanged.
+const openAiApiKey = normalizeSecret(process.env.OPENAI_API_KEY);
+if (openAiApiKey) process.env.OPENAI_API_KEY = openAiApiKey;
+
 console.info('Environment configuration loaded', {
   envFile: rootEnvPath,
   telegramTokenLength: telegramToken.length,

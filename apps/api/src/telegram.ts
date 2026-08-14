@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { Bot, type Context } from 'grammy';
-import { extractReceipt, transcribeVoice } from './ai.js';
+import { describeReceiptOcrFailure, extractReceipt, transcribeVoice } from './ai.js';
 import { categorizeExpense, type CategorizationInput } from './category-categorizer.js';
 import { config } from './config.js';
 import { readEkasaReceiptQr } from './ekasa-qr.js';
@@ -98,15 +98,32 @@ async function handleReceipt(ctx: Context): Promise<void> {
   if (upload.error) throw new Error(upload.error.message);
 
   const ekasa = await readEkasaReceiptQr(receiptImage.bytes);
-  const extraction = ekasa
-    ? {
+  let extraction;
+  if (ekasa) {
+    extraction = {
       merchantName: ekasa.merchantName,
       receiptDate: ekasa.receiptDate,
       amountMinor: ekasa.amountMinor,
       currencyCode: 'EUR' as const,
       ocrText: JSON.stringify({ source: 'ekasa_qr', merchantIco: ekasa.merchantIco, qrPayload: ekasa.rawPayload }),
+    };
+  } else {
+    try {
+      extraction = await extractReceipt(receiptImage.bytes, 'image/jpeg');
+    } catch (error) {
+      const failure = describeReceiptOcrFailure(error);
+      console.error('OpenAI receipt OCR failed', {
+        updateId: ctx.update.update_id,
+        status: failure.status,
+        code: failure.code,
+        providerCode: failure.providerCode,
+        providerType: failure.providerType,
+        requestId: failure.requestId,
+      });
+      await ctx.reply(`❌ ${failure.userMessage}`);
+      return;
     }
-    : await extractReceipt(receiptImage.bytes, 'image/jpeg');
+  }
 
   if (!extraction.amountMinor) { await ctx.reply('Bloček sa uložil až po doplnení OCR podpory; sumu sa nepodarilo spoľahlivo nájsť.'); return; }
   const synthetic = `${extraction.merchantName ?? 'Bloček'} ${formatAmount(extraction.amountMinor, 'EUR')}`;

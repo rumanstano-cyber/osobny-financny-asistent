@@ -3,9 +3,70 @@ import { config } from './config.js';
 
 const client = config.OPENAI_API_KEY ? new OpenAI({ apiKey: config.OPENAI_API_KEY }) : null;
 
+type OpenAiErrorDetails = {
+  status?: unknown;
+  code?: unknown;
+  type?: unknown;
+  message?: unknown;
+  request_id?: unknown;
+};
+
+export type ReceiptOcrFailure = {
+  code: 'configuration' | 'authentication' | 'model' | 'quota' | 'timeout' | 'input' | 'provider';
+  status: number | null;
+  providerCode: string | null;
+  providerType: string | null;
+  requestId: string | null;
+  userMessage: string;
+};
+
 function requireClient(): OpenAI {
   if (!client) throw new Error('OPENAI_API_KEY is not configured');
   return client;
+}
+
+function readOpenAiError(error: unknown): Pick<ReceiptOcrFailure, 'status' | 'providerCode' | 'providerType' | 'requestId'> {
+  if (!error || typeof error !== 'object') {
+    return { status: null, providerCode: null, providerType: null, requestId: null };
+  }
+
+  const details = error as OpenAiErrorDetails;
+  return {
+    status: typeof details.status === 'number' ? details.status : null,
+    providerCode: typeof details.code === 'string' ? details.code : null,
+    providerType: typeof details.type === 'string' ? details.type : null,
+    requestId: typeof details.request_id === 'string' ? details.request_id : null,
+  };
+}
+
+/**
+ * Converts provider failures to a message that is actionable for the user but
+ * never leaks an API key, receipt image, or complete provider response.
+ */
+export function describeReceiptOcrFailure(error: unknown): ReceiptOcrFailure {
+  const details = readOpenAiError(error);
+  const message = error instanceof Error ? error.message : String(error);
+  const normalizedMessage = message.toLowerCase();
+
+  if (message.includes('OPENAI_API_KEY is not configured')) {
+    return { ...details, code: 'configuration', userMessage: 'OCR bločkov nie je nakonfigurované: chýba OPENAI_API_KEY.' };
+  }
+  if (details.status === 401 || details.status === 403 || /incorrect api key|invalid api key|authentication/i.test(message)) {
+    return { ...details, code: 'authentication', userMessage: `OCR bločkov zlyhalo: OpenAI API kľúč je neplatný alebo nemá prístup (HTTP ${details.status ?? 401}).` };
+  }
+  if (details.providerCode === 'model_not_found' || /model.*(not found|does not exist|not available)/i.test(message)) {
+    return { ...details, code: 'model', userMessage: 'OCR bločkov zlyhalo: model gpt-4o-mini nie je dostupný pre tento OpenAI účet.' };
+  }
+  if (details.status === 429 || details.providerCode === 'insufficient_quota' || /rate limit|quota/i.test(message)) {
+    return { ...details, code: 'quota', userMessage: 'OCR bločkov je dočasne nedostupné: OpenAI účet dosiahol limit alebo kvótu. Skús to neskôr.' };
+  }
+  if (normalizedMessage.includes('timeout') || normalizedMessage.includes('timed out') || normalizedMessage.includes('connection')) {
+    return { ...details, code: 'timeout', userMessage: 'OCR bločkov vypršalo pri čakaní na OpenAI. Skús prosím fotku odoslať znova.' };
+  }
+  if (details.status === 400 || details.status === 413 || details.status === 415) {
+    return { ...details, code: 'input', userMessage: `OCR bločkov odmietlo fotku (HTTP ${details.status}). Skús odoslať ostrú fotografiu vo formáte JPG alebo PNG.` };
+  }
+  return { ...details, code: 'provider', userMessage: 'OCR bločkov sa nepodarilo dokončiť pre chybu služby OpenAI. Skús to prosím o chvíľu znova.' };
 }
 
 export async function transcribeVoice(audio: Buffer, fileName: string): Promise<string> {
