@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { Bot, type Context } from 'grammy';
-import { describeReceiptOcrFailure, extractReceipt, transcribeVoice } from './ai.js';
+import { describeReceiptOcrFailure, extractReceipt, transcribeVoice, type ReceiptExtraction } from './ai.js';
 import { categorizeExpense, type CategorizationInput } from './category-categorizer.js';
 import { config } from './config.js';
 import { readEkasaReceiptQr } from './ekasa-qr.js';
@@ -85,65 +85,86 @@ async function saveTransaction(ctx: Context, text: string, categorizationInput: 
 async function handleReceipt(ctx: Context): Promise<void> {
   const photo = ctx.message?.photo?.at(-1);
   if (!photo || !ctx.from || !ctx.message) return;
-  await ctx.reply('🔎 Čítam bloček…');
-  const file = await downloadTelegramFile(photo.file_id);
-  const receiptImage = await optimizeReceiptImage(file.bytes);
+  let stage = 'príprava spracovania';
 
-  // Persist the optimized JPEG before QR/OCR work. The temporary object remains
-  // private and is moved to the permanent workspace key after the transaction
-  // has resolved the workspace identity.
-  const hash = createHash('sha256').update(receiptImage.bytes).digest('hex');
-  const temporaryKey = `incoming/telegram/${ctx.update.update_id}-${hash.slice(0, 16)}.jpg`;
-  const upload = await supabase.storage.from('ofa-receipts').upload(temporaryKey, receiptImage.bytes, { contentType: 'image/jpeg', upsert: false });
-  if (upload.error) throw new Error(upload.error.message);
+  try {
+    await ctx.reply('🔎 Čítam bloček…');
+    stage = 'stiahnutie fotky z Telegramu';
+    const file = await downloadTelegramFile(photo.file_id);
+    stage = 'kompresia fotky';
+    const receiptImage = await optimizeReceiptImage(file.bytes);
 
-  const ekasa = await readEkasaReceiptQr(receiptImage.bytes);
-  let extraction;
-  if (ekasa) {
-    extraction = {
-      merchantName: ekasa.merchantName,
-      receiptDate: ekasa.receiptDate,
-      amountMinor: ekasa.amountMinor,
-      currencyCode: 'EUR' as const,
-      ocrText: JSON.stringify({ source: 'ekasa_qr', merchantIco: ekasa.merchantIco, qrPayload: ekasa.rawPayload }),
-    };
-  } else {
-    try {
+    // Persist the optimized JPEG before QR/OCR work. The temporary object remains
+    // private and is moved to the permanent workspace key after the transaction
+    // has resolved the workspace identity.
+    stage = 'uloženie fotky do Supabase Storage';
+    const hash = createHash('sha256').update(receiptImage.bytes).digest('hex');
+    const temporaryKey = `incoming/telegram/${ctx.update.update_id}-${hash.slice(0, 16)}.jpg`;
+    const upload = await supabase.storage.from('ofa-receipts').upload(temporaryKey, receiptImage.bytes, { contentType: 'image/jpeg', upsert: false });
+    if (upload.error) throw new Error(upload.error.message);
+
+    stage = 'čítanie eKasa QR kódu';
+    const ekasa = await readEkasaReceiptQr(receiptImage.bytes);
+    let extraction: ReceiptExtraction;
+    if (ekasa) {
+      extraction = {
+        merchantName: ekasa.merchantName,
+        receiptDate: ekasa.receiptDate,
+        amountMinor: ekasa.amountMinor,
+        currencyCode: 'EUR',
+        ocrText: JSON.stringify({ source: 'ekasa_qr', merchantIco: ekasa.merchantIco, qrPayload: ekasa.rawPayload }),
+      };
+    } else {
+      stage = 'OpenAI Vision OCR';
       extraction = await extractReceipt(receiptImage.bytes, 'image/jpeg');
-    } catch (error) {
-      const failure = describeReceiptOcrFailure(error);
-      console.error('OpenAI receipt OCR failed', {
-        updateId: ctx.update.update_id,
-        status: failure.status,
-        code: failure.code,
-        providerCode: failure.providerCode,
-        providerType: failure.providerType,
-        requestId: failure.requestId,
-      });
-      await ctx.reply(`❌ ${failure.userMessage}`);
+    }
+
+    if (!extraction.amountMinor) {
+      await ctx.reply('Bloček sa uložil, no sumu sa nepodarilo spoľahlivo nájsť. Skús prosím ostrejšiu fotku.');
       return;
     }
-  }
+    stage = 'uloženie finančnej transakcie';
+    const synthetic = `${extraction.merchantName ?? 'Bloček'} ${formatAmount(extraction.amountMinor, 'EUR')}`;
+    if (ekasa) console.log('eKasa amount before transaction save', { amountMinor: ekasa.amountMinor, synthetic });
+    const saved = await saveTransaction(ctx, synthetic, { merchantName: extraction.merchantName, receiptText: extraction.ocrText });
+    if (!saved || saved.result.was_duplicate) return;
+    if (ekasa) console.log('eKasa amount after transaction save', { parsedAmountMinor: saved.amount, transactionId: saved.result.transaction_id });
+    stage = 'načítanie uloženej transakcie';
+    const { data: transaction, error: transactionError } = await supabase.from('financial_transactions').select('created_by_user_id').eq('id', saved.result.transaction_id).single();
+    if (transactionError || !transaction) throw new Error(transactionError?.message ?? 'Transaction lookup failed');
+    stage = 'presun fotky do trvalého úložiska';
+    const key = `${saved.result.workspace_id}/${ctx.message.message_id}-${hash.slice(0, 16)}.jpg`;
+    const move = await supabase.storage.from('ofa-receipts').move(temporaryKey, key);
+    if (move.error) throw new Error(move.error.message);
+    stage = 'uloženie metadát bločku';
+    const sha256 = `\\x${hash}`;
+    const { data: storedFile, error: storedFileError } = await supabase.from('stored_files').insert({ workspace_id: saved.result.workspace_id, storage_provider: 'supabase_storage', storage_key: key, content_type: 'image/jpeg', byte_size: receiptImage.bytes.length, sha256, uploaded_by_user_id: transaction.created_by_user_id }).select('id').single();
+    if (storedFileError || !storedFile) throw new Error(storedFileError?.message ?? 'Receipt file metadata failed');
+    const { data: receipt, error: receiptError } = await supabase.from('ofa_receipts').insert({ workspace_id: saved.result.workspace_id, file_id: storedFile.id, uploaded_by_user_id: transaction.created_by_user_id, status: 'completed', merchant_name: extraction.merchantName, receipt_date: extraction.receiptDate, total_amount_minor: extraction.amountMinor, currency_code: 'EUR', ocr_text: extraction.ocrText, ocr_language: 'sk' }).select('id').single();
+    if (receiptError || !receipt) throw new Error(receiptError?.message ?? 'Receipt metadata failed');
+    stage = 'uloženie OCR výsledku';
+    const { error: ocrRunError } = await supabase.from('receipt_ocr_runs').insert({ receipt_id: receipt.id, provider: ekasa ? 'ekasa' : 'openai', provider_model: ekasa ? 'mdu-api-v1' : 'gpt-4o-mini', status: 'completed', extracted_data: extraction, confidence: ekasa ? 1 : 0.8, completed_at: new Date().toISOString() });
+    if (ocrRunError) throw new Error(ocrRunError.message);
+    const { error: receiptLinkError } = await supabase.from('receipt_transaction_links').insert({ receipt_id: receipt.id, transaction_id: saved.result.transaction_id, link_source: 'ocr', confidence: ekasa ? 1 : 0.8 });
+    if (receiptLinkError) throw new Error(receiptLinkError.message);
+    await ctx.reply(`${ekasa ? '✅ Zapísané z eKasa QR' : '✅ Zapísané z bločku'}: ${extraction.merchantName ?? 'Výdavok'} – ${formatAmount(extraction.amountMinor, 'EUR')}`);
+  } catch (error) {
+    // Pass the Error object itself to preserve its full stack trace in Render.
+    console.error('Receipt processing failed', {
+      updateId: ctx.update.update_id,
+      telegramUserId: ctx.from.id,
+      stage,
+    }, error);
 
-  if (!extraction.amountMinor) { await ctx.reply('Bloček sa uložil až po doplnení OCR podpory; sumu sa nepodarilo spoľahlivo nájsť.'); return; }
-  const synthetic = `${extraction.merchantName ?? 'Bloček'} ${formatAmount(extraction.amountMinor, 'EUR')}`;
-  if (ekasa) console.log('eKasa amount before transaction save', { amountMinor: ekasa.amountMinor, synthetic });
-  const saved = await saveTransaction(ctx, synthetic, { merchantName: extraction.merchantName, receiptText: extraction.ocrText });
-  if (!saved || saved.result.was_duplicate) return;
-  if (ekasa) console.log('eKasa amount after transaction save', { parsedAmountMinor: saved.amount, transactionId: saved.result.transaction_id });
-  const { data: transaction } = await supabase.from('financial_transactions').select('created_by_user_id').eq('id', saved.result.transaction_id).single();
-  if (!transaction) throw new Error('Transaction lookup failed');
-  const key = `${saved.result.workspace_id}/${ctx.message.message_id}-${hash.slice(0, 16)}.jpg`;
-  const move = await supabase.storage.from('ofa-receipts').move(temporaryKey, key);
-  if (move.error) throw new Error(move.error.message);
-  const sha256 = `\\x${hash}`;
-  const { data: storedFile, error: storedFileError } = await supabase.from('stored_files').insert({ workspace_id: saved.result.workspace_id, storage_provider: 'supabase_storage', storage_key: key, content_type: 'image/jpeg', byte_size: receiptImage.bytes.length, sha256, uploaded_by_user_id: transaction.created_by_user_id }).select('id').single();
-  if (storedFileError || !storedFile) throw new Error(storedFileError?.message ?? 'Receipt file metadata failed');
-  const { data: receipt, error: receiptError } = await supabase.from('ofa_receipts').insert({ workspace_id: saved.result.workspace_id, file_id: storedFile.id, uploaded_by_user_id: transaction.created_by_user_id, status: 'completed', merchant_name: extraction.merchantName, receipt_date: extraction.receiptDate, total_amount_minor: extraction.amountMinor, currency_code: 'EUR', ocr_text: extraction.ocrText, ocr_language: 'sk' }).select('id').single();
-  if (receiptError || !receipt) throw new Error(receiptError?.message ?? 'Receipt metadata failed');
-  await supabase.from('receipt_ocr_runs').insert({ receipt_id: receipt.id, provider: ekasa ? 'ekasa' : 'openai', provider_model: ekasa ? 'mdu-api-v1' : 'gpt-4o-mini', status: 'completed', extracted_data: extraction, confidence: ekasa ? 1 : 0.8, completed_at: new Date().toISOString() });
-  await supabase.from('receipt_transaction_links').insert({ receipt_id: receipt.id, transaction_id: saved.result.transaction_id, link_source: 'ocr', confidence: ekasa ? 1 : 0.8 });
-  await ctx.reply(`${ekasa ? '✅ Zapísané z eKasa QR' : '✅ Zapísané z bločku'}: ${extraction.merchantName ?? 'Výdavok'} – ${formatAmount(extraction.amountMinor, 'EUR')}`);
+    const message = stage === 'OpenAI Vision OCR'
+      ? describeReceiptOcrFailure(error).userMessage
+      : `Spracovanie bločku zlyhalo pri fáze: ${stage}. Skús to prosím znova.`;
+    try {
+      await ctx.reply(`❌ ${message}`);
+    } catch (replyError) {
+      console.error('Unable to send receipt failure message to Telegram', replyError);
+    }
+  }
 }
 
 export function createTelegramBot(): Bot {
