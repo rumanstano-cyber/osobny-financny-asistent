@@ -21,6 +21,11 @@ function isEmailAddress(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
+/** A report request must be handled before attempting to parse an amount. */
+function isCurrentMonthReportRequest(text: string): boolean {
+  return /\breport\b|prehľad|prehlad|sumár|sumar|štatistik|koľko som minul|stav mojich financií|súhrn|suhrn/iu.test(text);
+}
+
 async function ensureTelegramEmailProfile(ctx: Context): Promise<TelegramEmailProfile | null> {
   if (!ctx.from) return null;
   const { data, error } = await supabase.rpc('ensure_telegram_email_profile', {
@@ -236,7 +241,7 @@ export function createTelegramBot(): Bot {
         return;
       }
 
-      if (/koľko som minul|stav mojich financií|súhrn/i.test(text)) {
+      if (isCurrentMonthReportRequest(text)) {
         await ctx.reply(await currentMonthSummary(String(ctx.from.id)));
         return;
       }
