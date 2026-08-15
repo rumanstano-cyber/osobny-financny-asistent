@@ -146,17 +146,33 @@ function quickChartUrl(report: MonthlyReport): string {
         data: categories.map((item) => item.amountMinor / 100),
         backgroundColor: ['#2563eb', '#16a34a', '#f59e0b', '#dc2626', '#7c3aed', '#0891b2', '#db2777', '#65a30d'],
         borderColor: '#ffffff',
-        borderWidth: 2,
+        borderWidth: 4,
       }],
     },
     options: {
+      layout: { padding: { top: 8, right: 8, bottom: 4, left: 8 } },
       plugins: {
-        title: { display: true, text: `Výdavky podľa kategórií – ${report.monthLabel}`, font: { size: 20 } },
-        legend: { position: 'bottom', labels: { boxWidth: 14, padding: 16, font: { size: 13 } } },
+        title: { display: true, text: `Výdavky podľa kategórií – ${report.monthLabel}`, font: { size: 26, weight: 'bold' }, padding: { top: 8, bottom: 16 } },
+        legend: { position: 'bottom', labels: { boxWidth: 20, padding: 20, font: { size: 17, weight: 'bold' } } },
+        datalabels: {
+          color: '#ffffff',
+          textStrokeColor: 'rgba(15, 23, 42, 0.75)',
+          textStrokeWidth: 3,
+          font: { size: 20, weight: 'bold' },
+          textAlign: 'center',
+          formatter: '__OFA_PIE_LABEL_FORMATTER__',
+        },
       },
     },
   };
-  return `https://quickchart.io/chart?width=800&height=500&c=${encodeURIComponent(JSON.stringify(chart))}`;
+  // QuickChart accepts JavaScript callbacks in its chart configuration. Keep
+  // the callback separate from JSON serialization so it remains executable,
+  // while all data values are still safely JSON-encoded.
+  const chartConfig = JSON.stringify(chart).replace(
+    '"__OFA_PIE_LABEL_FORMATTER__"',
+    'function(value, context) { var values = context.dataset.data; var total = values.reduce(function(sum, item) { return sum + Number(item); }, 0); var share = total > 0 ? Math.round((Number(value) / total) * 100) : 0; return [share + "%", Number(value).toFixed(2) + " €"]; }',
+  );
+  return `https://quickchart.io/chart?width=800&height=800&devicePixelRatio=2&c=${encodeURIComponent(chartConfig)}`;
 }
 
 function telegramCaption(report: MonthlyReport, commentary: string): string {
