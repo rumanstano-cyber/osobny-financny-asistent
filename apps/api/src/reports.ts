@@ -10,6 +10,7 @@ type CategoryAssignmentRow = { transaction_id: string; category: { name: string;
 type WorkspaceRow = { id: string; base_currency_code: string };
 type MembershipRow = { workspace_id: string; user_id: string; role: string };
 type TelegramAccountRow = { user_id: string; external_account_id: string };
+type UserEmailRow = { id: string; email: string | null };
 type CurrentMonthReportLookup = { report: MonthlyReport; unavailableMessage: null } | { report: null; unavailableMessage: string };
 
 export type CategorySpend = { name: string; slug: string; amountMinor: number };
@@ -202,14 +203,24 @@ function reportEmailHtml(report: MonthlyReport, commentary: string, chartUrl: st
   return `<!doctype html><html><body style="font-family:Arial,sans-serif;color:#111827"><h1>Mesačný prehľad – ${htmlEscape(report.monthLabel)}</h1><img src="${htmlEscape(chartUrl)}" alt="Graf výdavkov" style="max-width:100%;height:auto"><table style="border-collapse:collapse;margin:16px 0"><tr><td>Príjmy</td><td>${htmlEscape(formatCurrency(report.incomeMinor, report.currencyCode))}</td></tr><tr><td>Výdavky</td><td>${htmlEscape(formatCurrency(report.expenseMinor, report.currencyCode))}</td></tr><tr><td><strong>Bilancia</strong></td><td><strong>${htmlEscape(formatCurrency(report.balanceMinor, report.currencyCode))}</strong></td></tr></table><p>${htmlEscape(commentary)}</p><h2>Výdavky podľa kategórií</h2><table style="border-collapse:collapse">${categoryRows || '<tr><td>Bez výdavkov</td><td></td></tr>'}</table></body></html>`;
 }
 
-async function sendReportEmail(report: MonthlyReport, commentary: string, chartUrl: string): Promise<boolean> {
-  if (!config.RESEND_API_KEY || !config.EMAIL_FROM || !config.EMAIL_TO) return false;
-  const to = config.EMAIL_TO.split(',').map((address) => address.trim()).filter(Boolean);
-  if (to.length === 0) return false;
+function isEmailDeliveryConfigured(): boolean {
+  const missing = [
+    !config.RESEND_API_KEY ? 'RESEND_API_KEY' : null,
+    !config.EMAIL_FROM ? 'EMAIL_FROM' : null,
+  ].filter((value): value is string => value !== null);
+  if (missing.length > 0) {
+    console.warn('Monthly e-mail delivery skipped: missing configuration', { missing });
+    return false;
+  }
+  return true;
+}
+
+async function sendReportEmail(report: MonthlyReport, commentary: string, chartUrl: string, recipient: string): Promise<boolean> {
+  if (!config.RESEND_API_KEY || !config.EMAIL_FROM) return false;
   const response = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: { authorization: `Bearer ${config.RESEND_API_KEY}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ from: config.EMAIL_FROM, to, subject: `Mesačný finančný prehľad – ${report.monthLabel}`, html: reportEmailHtml(report, commentary, chartUrl) }),
+    body: JSON.stringify({ from: config.EMAIL_FROM, to: [recipient], subject: `Mesačný finančný prehľad – ${report.monthLabel}`, html: reportEmailHtml(report, commentary, chartUrl) }),
   });
   if (!response.ok) throw new Error(`Resend delivery failed: ${response.status}`);
   return true;
@@ -250,31 +261,48 @@ export async function sendMonthlyReports(bot: Bot, referenceDate = new Date()): 
   if (accountError) throw new Error(accountError.message);
 
   const telegramAccounts = (accounts ?? []) as TelegramAccountRow[];
-  if (telegramAccounts.length === 0) return { delivered: 0, skipped: 0, failed: 0 };
-  const userIds = [...new Set(telegramAccounts.map((account) => account.user_id))];
-  const accountByUser = new Map(telegramAccounts.map((account) => [account.user_id, account]));
+  const telegramAccountByUser = new Map(telegramAccounts.map((account) => [account.user_id, account]));
 
   const { data: memberships, error: membershipError } = await supabase
     .from('workspace_members')
     .select('workspace_id, user_id, role')
-    .in('user_id', userIds)
     .eq('status', 'active');
   if (membershipError) throw new Error(membershipError.message);
   const activeMemberships = (memberships ?? []) as MembershipRow[];
   if (activeMemberships.length === 0) return { delivered: 0, skipped: 0, failed: 0 };
+  const emailDeliveryEnabled = isEmailDeliveryConfigured();
+
+  const userIds = [...new Set(activeMemberships.map((membership) => membership.user_id))];
+  const { data: users, error: userError } = await supabase
+    .from('ofa_users')
+    .select('id, email')
+    .in('id', userIds)
+    .is('deleted_at', null);
+  if (userError) throw new Error(userError.message);
+  const emailByUserId = new Map(
+    ((users ?? []) as UserEmailRow[])
+      .filter((user): user is UserEmailRow & { email: string } => Boolean(user.email?.trim()))
+      .map((user) => [user.id, user.email.trim()]),
+  );
 
   const workspaceIds = [...new Set(activeMemberships.map((membership) => membership.workspace_id))];
   const { data: workspaces, error: workspaceError } = await supabase.from('workspaces').select('id, base_currency_code').in('id', workspaceIds).is('deleted_at', null);
   if (workspaceError) throw new Error(workspaceError.message);
   const workspaceById = new Map(((workspaces ?? []) as WorkspaceRow[]).map((workspace) => [workspace.id, workspace]));
 
+  const membershipsByWorkspace = new Map<string, MembershipRow[]>();
+  for (const membership of activeMemberships) {
+    const current = membershipsByWorkspace.get(membership.workspace_id) ?? [];
+    current.push(membership);
+    membershipsByWorkspace.set(membership.workspace_id, current);
+  }
+
   let delivered = 0;
   let skipped = 0;
   let failed = 0;
-  for (const membership of activeMemberships) {
-    const account = accountByUser.get(membership.user_id);
-    const workspace = workspaceById.get(membership.workspace_id);
-    if (!account || !workspace) continue;
+  for (const [workspaceId, workspaceMemberships] of membershipsByWorkspace) {
+    const workspace = workspaceById.get(workspaceId);
+    if (!workspace) continue;
     try {
       const report = await buildMonthlyReport(workspace.id, workspace.base_currency_code, referenceDate);
       const deliveryId = await claimMonthlyDelivery(workspace, report);
@@ -289,20 +317,31 @@ export async function sendMonthlyReports(bot: Bot, referenceDate = new Date()): 
       try { commentary = await monthlyReportCommentary(numbers); } catch { commentary = 'Prehľad je pripravený. Sleduj najväčšie kategórie výdavkov v ďalšom mesiaci.'; }
       const chartUrl = quickChartUrl(report);
       let sent = false;
-      try {
-        await bot.api.sendPhoto(account.external_account_id, chartUrl, { caption: telegramCaption(report, commentary) });
-        sent = true;
-      } catch (error) {
-        console.error('Telegram monthly report delivery failed', { workspaceId: workspace.id, error: error instanceof Error ? error.message : String(error) });
-      }
-      if (membership.role === 'owner') {
-        try { sent = (await sendReportEmail(report, commentary, chartUrl)) || sent; } catch (error) { console.error('Email monthly report delivery failed', { workspaceId: workspace.id, error: error instanceof Error ? error.message : String(error) }); }
+      for (const membership of workspaceMemberships) {
+        const account = telegramAccountByUser.get(membership.user_id);
+        if (account) {
+          try {
+            await bot.api.sendPhoto(account.external_account_id, chartUrl, { caption: telegramCaption(report, commentary) });
+            sent = true;
+          } catch (error) {
+            console.error('Telegram monthly report delivery failed', { workspaceId: workspace.id, error: error instanceof Error ? error.message : String(error) });
+          }
+        }
+
+        const email = emailByUserId.get(membership.user_id);
+        if (email && emailDeliveryEnabled) {
+          try {
+            sent = (await sendReportEmail(report, commentary, chartUrl, email)) || sent;
+          } catch (error) {
+            console.error('Monthly e-mail report delivery failed', { workspaceId: workspace.id, error: error instanceof Error ? error.message : String(error) });
+          }
+        }
       }
       await markDelivery(deliveryId, sent ? 'sent' : 'failed');
       if (sent) delivered += 1; else failed += 1;
     } catch (error) {
       failed += 1;
-      console.error('Monthly report generation failed', { workspaceId: membership.workspace_id, error: error instanceof Error ? error.message : String(error) });
+      console.error('Monthly report generation failed', { workspaceId, error: error instanceof Error ? error.message : String(error) });
     }
   }
   return { delivered, skipped, failed };

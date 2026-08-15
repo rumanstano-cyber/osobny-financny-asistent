@@ -26,6 +26,10 @@ services:
         generateValue: true
       - key: OPENAI_API_KEY
         sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
       - key: INTERNAL_CRON_SECRET
         generateValue: true
   - type: web
