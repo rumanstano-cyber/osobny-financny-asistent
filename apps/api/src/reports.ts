@@ -10,6 +10,7 @@ type CategoryAssignmentRow = { transaction_id: string; category: { name: string;
 type WorkspaceRow = { id: string; base_currency_code: string };
 type MembershipRow = { workspace_id: string; user_id: string; role: string };
 type TelegramAccountRow = { user_id: string; external_account_id: string };
+type CurrentMonthReportLookup = { report: MonthlyReport; unavailableMessage: null } | { report: null; unavailableMessage: string };
 
 export type CategorySpend = { name: string; slug: string; amountMinor: number };
 export type MonthlyReport = {
@@ -133,23 +134,44 @@ function reportNumbers(report: MonthlyReport, previousExpenseMinor?: number): st
 
 function quickChartUrl(report: MonthlyReport): string {
   const categories = report.categories.slice(0, 8);
+  const total = categories.reduce((sum, item) => sum + item.amountMinor, 0);
   const chart = {
-    type: 'doughnut',
+    type: 'pie',
     data: {
-      labels: categories.map((item) => item.name),
-      datasets: [{ data: categories.map((item) => item.amountMinor / 100), backgroundColor: ['#2563eb', '#16a34a', '#f59e0b', '#dc2626', '#7c3aed', '#0891b2', '#db2777', '#65a30d'] }],
+      labels: categories.map((item) => {
+        const share = total > 0 ? Math.round((item.amountMinor / total) * 100) : 0;
+        return `${item.name} (${share} %)`;
+      }),
+      datasets: [{
+        data: categories.map((item) => item.amountMinor / 100),
+        backgroundColor: ['#2563eb', '#16a34a', '#f59e0b', '#dc2626', '#7c3aed', '#0891b2', '#db2777', '#65a30d'],
+        borderColor: '#ffffff',
+        borderWidth: 2,
+      }],
     },
-    options: { plugins: { title: { display: true, text: `Výdavky – ${report.monthLabel}` }, legend: { position: 'bottom' } } },
+    options: {
+      plugins: {
+        title: { display: true, text: `Výdavky podľa kategórií – ${report.monthLabel}`, font: { size: 20 } },
+        legend: { position: 'bottom', labels: { boxWidth: 14, padding: 16, font: { size: 13 } } },
+      },
+    },
   };
   return `https://quickchart.io/chart?width=800&height=500&c=${encodeURIComponent(JSON.stringify(chart))}`;
 }
 
 function telegramCaption(report: MonthlyReport, commentary: string): string {
+  const categoryLines = report.categories.slice(0, 8).map((item) => {
+    const share = report.expenseMinor > 0 ? Math.round((item.amountMinor / report.expenseMinor) * 100) : 0;
+    return `• ${item.name}: ${formatCurrency(item.amountMinor, report.currencyCode)} (${share} %)`;
+  });
   return [
     `📊 Mesačný prehľad – ${report.monthLabel}`,
     `Príjmy: ${formatCurrency(report.incomeMinor, report.currencyCode)}`,
     `Výdavky: ${formatCurrency(report.expenseMinor, report.currencyCode)}`,
     `Bilancia: ${formatCurrency(report.balanceMinor, report.currencyCode)}`,
+    '',
+    'Výdavky podľa kategórií:',
+    ...(categoryLines.length > 0 ? categoryLines : ['• Zatiaľ žiadne výdavky']),
     '',
     commentary,
   ].join('\n');
@@ -270,14 +292,36 @@ export async function sendMonthlyReports(bot: Bot, referenceDate = new Date()): 
   return { delivered, skipped, failed };
 }
 
-export async function currentMonthSummary(telegramUserId: string): Promise<string> {
+async function loadCurrentMonthReport(telegramUserId: string): Promise<CurrentMonthReportLookup> {
   const { data: account } = await supabase.from('channel_accounts').select('user_id').eq('channel', 'telegram').eq('external_account_id', telegramUserId).is('unlinked_at', null).single();
-  if (!account) return 'Zatiaľ nemáš žiadne uložené transakcie.';
+  if (!account) return { report: null, unavailableMessage: 'Zatiaľ nemáš žiadne uložené transakcie.' };
   const { data: membership } = await supabase.from('workspace_members').select('workspace_id').eq('user_id', account.user_id).eq('status', 'active').limit(1).single();
-  if (!membership) return 'Nenašiel som finančný priestor.';
+  if (!membership) return { report: null, unavailableMessage: 'Nenašiel som finančný priestor.' };
   const { data: workspace } = await supabase.from('workspaces').select('base_currency_code').eq('id', membership.workspace_id).is('deleted_at', null).single();
-  if (!workspace) return 'Nenašiel som finančný priestor.';
+  if (!workspace) return { report: null, unavailableMessage: 'Nenašiel som finančný priestor.' };
   const report = await buildMonthlyReport(membership.workspace_id, workspace.base_currency_code);
+  return { report, unavailableMessage: null };
+}
+
+export async function currentMonthSummary(telegramUserId: string): Promise<string> {
+  const lookup = await loadCurrentMonthReport(telegramUserId);
+  if (!lookup.report) return lookup.unavailableMessage;
+  const report = lookup.report;
   const summary = reportNumbers(report);
   try { return `${summary}\n${await monthlyCommentary(summary)}`; } catch { return summary; }
+}
+
+export type CurrentMonthVisualReport = { chartUrl: string | null; caption: string };
+
+export async function currentMonthVisualReport(telegramUserId: string): Promise<CurrentMonthVisualReport> {
+  const lookup = await loadCurrentMonthReport(telegramUserId);
+  if (!lookup.report) return { chartUrl: null, caption: lookup.unavailableMessage };
+
+  const summary = reportNumbers(lookup.report);
+  let commentary = '';
+  try { commentary = await monthlyCommentary(summary); } catch { commentary = 'Prehľad je pripravený. Sleduj najväčšie kategórie výdavkov.'; }
+  return {
+    chartUrl: lookup.report.categories.length > 0 ? quickChartUrl(lookup.report) : null,
+    caption: telegramCaption(lookup.report, commentary),
+  };
 }

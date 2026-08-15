@@ -8,7 +8,7 @@ import { formatAmount, parseFinancialMessage } from './finance-parser.js';
 import { optimizeReceiptImage } from './receipt-image.js';
 import { supabase } from './supabase.js';
 import { downloadTelegramFile } from './telegram-files.js';
-import { currentMonthSummary } from './reports.js';
+import { currentMonthVisualReport } from './reports.js';
 
 type RpcResult = { transaction_id: string; workspace_id: string; was_duplicate: boolean };
 type TelegramEmailProfile = { user_id: string; email: string | null };
@@ -242,7 +242,12 @@ export function createTelegramBot(): Bot {
       }
 
       if (isCurrentMonthReportRequest(text)) {
-        await ctx.reply(await currentMonthSummary(String(ctx.from.id)));
+        const report = await currentMonthVisualReport(String(ctx.from.id));
+        if (report.chartUrl) {
+          await ctx.replyWithPhoto(report.chartUrl, { caption: report.caption });
+        } else {
+          await ctx.reply(report.caption);
+        }
         return;
       }
 
