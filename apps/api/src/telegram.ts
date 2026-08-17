@@ -244,9 +244,9 @@ export function createTelegramBot(): Bot {
       if (isCurrentMonthReportRequest(text)) {
         const report = await currentMonthVisualReport(String(ctx.from.id));
         if (report.chartUrl) {
-          await ctx.replyWithPhoto(report.chartUrl, { caption: report.caption });
+          await ctx.replyWithPhoto(report.chartUrl, { caption: report.caption, parse_mode: 'HTML' });
         } else {
-          await ctx.reply(report.caption);
+          await ctx.reply(report.caption, { parse_mode: 'HTML' });
         }
         return;
       }

@@ -153,8 +153,8 @@ function quickChartUrl(report: MonthlyReport): string {
     options: {
       layout: { padding: { top: 8, right: 8, bottom: 4, left: 8 } },
       plugins: {
-        title: { display: true, text: `Výdavky podľa kategórií – ${report.monthLabel}`, font: { size: 26, weight: 'bold' }, padding: { top: 8, bottom: 16 } },
-        legend: { position: 'bottom', labels: { boxWidth: 20, padding: 20, font: { size: 17, weight: 'bold' } } },
+        title: { display: true, text: `Výdavky podľa kategórií – ${report.monthLabel}`, color: '#ffffff', font: { size: 26, weight: 'bold' }, padding: { top: 8, bottom: 16 } },
+        legend: { position: 'bottom', labels: { color: '#ffffff', boxWidth: 20, padding: 20, font: { size: 17, weight: 'bold' } } },
         datalabels: {
           color: '#ffffff',
           textStrokeColor: 'rgba(15, 23, 42, 0.75)',
@@ -173,24 +173,28 @@ function quickChartUrl(report: MonthlyReport): string {
     '"__OFA_PIE_LABEL_FORMATTER__"',
     'function(value, context) { var values = context.dataset.data; var total = values.reduce(function(sum, item) { return sum + Number(item); }, 0); var share = total > 0 ? Math.round((Number(value) / total) * 100) : 0; return [share + "%", Number(value).toFixed(2) + " €"]; }',
   );
-  return `https://quickchart.io/chart?width=800&height=800&devicePixelRatio=2&c=${encodeURIComponent(chartConfig)}`;
+  return `https://quickchart.io/chart?width=1000&height=600&devicePixelRatio=2&backgroundColor=%23121212&version=4&c=${encodeURIComponent(chartConfig)}`;
 }
 
 function telegramCaption(report: MonthlyReport, commentary: string): string {
   const categoryLines = report.categories.slice(0, 8).map((item) => {
     const share = report.expenseMinor > 0 ? Math.round((item.amountMinor / report.expenseMinor) * 100) : 0;
-    return `• ${item.name}: ${formatCurrency(item.amountMinor, report.currencyCode)} (${share} %)`;
+    return `• ${htmlEscape(item.name)}: ${htmlEscape(formatCurrency(item.amountMinor, report.currencyCode))} (${share} %)`;
   });
+  const income = formatCurrency(report.incomeMinor, report.currencyCode);
+  const expense = formatCurrency(report.expenseMinor, report.currencyCode);
+  const balance = formatCurrency(Math.abs(report.balanceMinor), report.currencyCode);
+  const balancePrefix = report.balanceMinor > 0 ? '+' : report.balanceMinor < 0 ? '-' : '';
   return [
-    `📊 Mesačný prehľad – ${report.monthLabel}`,
-    `Príjmy: ${formatCurrency(report.incomeMinor, report.currencyCode)}`,
-    `Výdavky: ${formatCurrency(report.expenseMinor, report.currencyCode)}`,
-    `Bilancia: ${formatCurrency(report.balanceMinor, report.currencyCode)}`,
+    `📊 <b>Mesačný prehľad – ${htmlEscape(report.monthLabel)}</b>`,
+    `🟢 <b>Príjmy: +${htmlEscape(income)}</b>`,
+    `🔴 <b>Výdavky: -${htmlEscape(expense)}</b>`,
+    `⚪ <b>Bilancia: ${balancePrefix}${htmlEscape(balance)}</b>`,
     '',
-    'Výdavky podľa kategórií:',
+    '<b>Výdavky podľa kategórií:</b>',
     ...(categoryLines.length > 0 ? categoryLines : ['• Zatiaľ žiadne výdavky']),
     '',
-    commentary,
+    htmlEscape(commentary),
   ].join('\n');
 }
 
@@ -321,7 +325,7 @@ export async function sendMonthlyReports(bot: Bot, referenceDate = new Date()): 
         const account = telegramAccountByUser.get(membership.user_id);
         if (account) {
           try {
-            await bot.api.sendPhoto(account.external_account_id, chartUrl, { caption: telegramCaption(report, commentary) });
+            await bot.api.sendPhoto(account.external_account_id, chartUrl, { caption: telegramCaption(report, commentary), parse_mode: 'HTML' });
             sent = true;
           } catch (error) {
             console.error('Telegram monthly report delivery failed', { workspaceId: workspace.id, error: error instanceof Error ? error.message : String(error) });
