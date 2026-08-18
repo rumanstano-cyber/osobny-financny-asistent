@@ -11,7 +11,6 @@ import { downloadTelegramFile } from './telegram-files.js';
 import { currentMonthVisualReport } from './reports.js';
 
 type RpcResult = { transaction_id: string; workspace_id: string; was_duplicate: boolean };
-type TelegramEmailProfile = { user_id: string; email: string | null };
 type ReceiptClaimMatch = {
   receipt_id: string;
   merchant_name: string | null;
@@ -27,10 +26,6 @@ const processedUpdateIds = new Set<number>();
 const maxTrackedUpdates = 10_000;
 
 function name(ctx: Context) { return [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ') || ctx.from?.username || 'Používateľ'; }
-
-function isEmailAddress(value: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
-}
 
 /** A report request must be handled before attempting to parse an amount. */
 function isCurrentMonthReportRequest(text: string): boolean {
@@ -117,41 +112,6 @@ async function handleReceiptClaimSearch(ctx: Context, query: string): Promise<vo
     keyboard.text(`${merchant} · ${date}${amount}`.slice(0, 60), `claim:${receipt.receipt_id}`).row();
   }
   await ctx.reply(`Našiel som ${matches.length} bločkov. Vyber ten správny pre reklamáciu:`, { reply_markup: keyboard });
-}
-
-async function ensureTelegramEmailProfile(ctx: Context): Promise<TelegramEmailProfile | null> {
-  if (!ctx.from) return null;
-  const { data, error } = await supabase.rpc('ensure_telegram_email_profile', {
-    p_telegram_user_id: String(ctx.from.id),
-    p_display_name: name(ctx),
-  });
-  if (error) throw new Error(error.message);
-  return (data as TelegramEmailProfile[] | null)?.[0] ?? null;
-}
-
-async function requireEmailBeforeFeatures(ctx: Context): Promise<boolean> {
-  const profile = await ensureTelegramEmailProfile(ctx);
-  if (!profile) return false;
-  if (profile.email) return true;
-
-  const text = ctx.message?.text?.trim() ?? '';
-  if (isEmailAddress(text)) {
-    const { error } = await supabase.rpc('set_telegram_user_email', {
-      p_telegram_user_id: String(ctx.from!.id),
-      p_display_name: name(ctx),
-      p_email: text,
-    });
-    if (error) {
-      console.warn('Telegram e-mail collection failed', { telegramUserId: ctx.from!.id, error: error.message });
-      await ctx.reply('E-mail sa nepodarilo uložiť. Skontroluj jeho formát alebo použi inú adresu.');
-      return false;
-    }
-    await ctx.reply('✅ E-mail je uložený. Teraz môžeš poslať výdavok, fotku bločku alebo sa opýtať na finančný prehľad.');
-    return false;
-  }
-
-  await ctx.reply('Pred použitím bota potrebujem tvoju e-mailovú adresu. Pošli ju prosím v tvare meno@example.com.');
-  return false;
 }
 
 function claimUpdate(updateId: number): boolean {
@@ -283,19 +243,11 @@ async function handleReceipt(ctx: Context): Promise<void> {
 export function createTelegramBot(): Bot {
   const bot = new Bot(config.TELEGRAM_BOT_TOKEN);
   bot.command('start', async (ctx) => {
-    try {
-      if (await requireEmailBeforeFeatures(ctx)) {
-        await ctx.reply('Ahoj! Pošli „Káva 3 €“, hlasovú správu alebo fotku bločku.');
-      }
-    } catch (error) {
-      console.error('Telegram onboarding failed', { telegramUserId: ctx.from?.id, error: error instanceof Error ? error.message : String(error) });
-      await ctx.reply('Onboarding sa nepodarilo pripraviť. Skús to prosím o chvíľu znova.');
-    }
+    await ctx.reply('Ahoj! Pošli „Káva 3 €“, hlasovú správu alebo fotku bločku. E-mail teraz nepotrebuješ.');
   });
   bot.command('link', async (ctx) => {
     if (!ctx.from) return;
     try {
-      if (!(await requireEmailBeforeFeatures(ctx))) return;
       const code = ctx.match.trim();
       if (!code) {
         await ctx.reply('Vygeneruj si párovací kód vo webovom prehľade a pošli mi: /link TVOJ_KÓD');
@@ -321,11 +273,6 @@ export function createTelegramBot(): Bot {
     try {
       await ctx.answerCallbackQuery();
       if (ctx.chat?.type !== 'private' || !ctx.from) return;
-      const profile = await ensureTelegramEmailProfile(ctx);
-      if (!profile?.email) {
-        await ctx.reply('Pred dohľadaním bločku mi najprv pošli svoju e-mailovú adresu v tvare meno@example.com.');
-        return;
-      }
       const receipt = await getReceiptClaim(String(ctx.from.id), ctx.match[1]);
       if (!receipt) {
         await ctx.reply('Tento bloček už nie je dostupný alebo k nemu nemáš prístup. Skús vyhľadávanie znova.');
@@ -349,8 +296,6 @@ export function createTelegramBot(): Bot {
     }
 
     try {
-      if (!(await requireEmailBeforeFeatures(ctx))) return;
-
       if (ctx.message.photo) {
         await handleReceipt(ctx);
         return;
