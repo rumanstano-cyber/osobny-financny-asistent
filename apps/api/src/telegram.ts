@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { Bot, type Context } from 'grammy';
+import { Bot, InlineKeyboard, type Context } from 'grammy';
 import { describeReceiptOcrFailure, extractReceipt, transcribeVoice, type ReceiptExtraction } from './ai.js';
 import { categorizeExpense, type CategorizationInput } from './category-categorizer.js';
 import { config } from './config.js';
@@ -12,6 +12,17 @@ import { currentMonthVisualReport } from './reports.js';
 
 type RpcResult = { transaction_id: string; workspace_id: string; was_duplicate: boolean };
 type TelegramEmailProfile = { user_id: string; email: string | null };
+type ReceiptClaimMatch = {
+  receipt_id: string;
+  merchant_name: string | null;
+  receipt_date: string | null;
+  total_amount_minor: number | null;
+  currency_code: string | null;
+  storage_key: string;
+  content_type: string;
+  matched_item_name: string | null;
+  match_score?: number;
+};
 const processedUpdateIds = new Set<number>();
 const maxTrackedUpdates = 10_000;
 
@@ -24,6 +35,88 @@ function isEmailAddress(value: string): boolean {
 /** A report request must be handled before attempting to parse an amount. */
 function isCurrentMonthReportRequest(text: string): boolean {
   return /\breport\b|prehľad|prehlad|sumár|sumar|štatistik|koľko som minul|stav mojich financií|súhrn|suhrn/iu.test(text);
+}
+
+function isReceiptClaimRequest(text: string): boolean {
+  return /reklam|blo[cč]ek|doklad|účten/iu.test(text);
+}
+
+/** Extracts only the meaningful search phrase from natural Slovak claim requests. */
+function receiptClaimQuery(text: string): string {
+  const ignored = new Set([
+    'reklamacia', 'reklamaciu', 'reklamacii', 'reklamacne', 'reklamovat',
+    'potrebujem', 'prosim', 'najdi', 'najst', 'chcem', 'posli', 'ukaz',
+    'blocek', 'uctenku', 'doklad', 'z', 'zo', 'pre', 'na', 'mi', 'ten', 'to',
+  ]);
+  const normalized = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const words = text.match(/[\p{L}\p{N}][\p{L}\p{N}-]*/gu) ?? [];
+  return words.filter((word) => !ignored.has(normalized(word))).join(' ').trim().slice(0, 160);
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[character] ?? character);
+}
+
+function claimCurrency(value: string | null): Parameters<typeof formatAmount>[1] {
+  return value === 'CZK' || value === 'USD' || value === 'GBP' || value === 'HUF' || value === 'PLN' || value === 'EUR'
+    ? value
+    : 'EUR';
+}
+
+function claimCaption(receipt: ReceiptClaimMatch): string {
+  const merchant = escapeHtml(receipt.merchant_name?.trim() || 'Neznámy obchod');
+  const item = receipt.matched_item_name ? `\n<b>Položka:</b> ${escapeHtml(receipt.matched_item_name)}` : '';
+  const date = receipt.receipt_date ?? 'dátum sa nepodarilo prečítať';
+  const amount = receipt.total_amount_minor === null ? 'suma sa nepodarila prečítať' : formatAmount(receipt.total_amount_minor, claimCurrency(receipt.currency_code));
+  return `🧾 <b>Bločok pre reklamáciu</b>\n<b>Obchod:</b> ${merchant}\n<b>Dátum:</b> ${date}${item}\n<b>Celková suma:</b> ${amount}`;
+}
+
+async function sendReceiptForClaim(ctx: Context, receipt: ReceiptClaimMatch): Promise<void> {
+  const { data, error } = await supabase.storage.from('ofa-receipts').createSignedUrl(receipt.storage_key, 10 * 60);
+  if (error || !data?.signedUrl) throw new Error(error?.message ?? 'Signed URL for receipt was not created');
+  await ctx.replyWithPhoto(data.signedUrl, { caption: claimCaption(receipt), parse_mode: 'HTML' });
+}
+
+async function findReceiptClaims(telegramUserId: string, query: string): Promise<ReceiptClaimMatch[]> {
+  const { data, error } = await supabase.rpc('search_telegram_receipts_for_claim', {
+    p_telegram_user_id: telegramUserId,
+    p_query: query,
+    p_limit: 5,
+  });
+  if (error) throw new Error(error.message);
+  return (data as ReceiptClaimMatch[] | null) ?? [];
+}
+
+async function getReceiptClaim(telegramUserId: string, receiptId: string): Promise<ReceiptClaimMatch | null> {
+  const { data, error } = await supabase.rpc('get_telegram_receipt_for_claim', {
+    p_telegram_user_id: telegramUserId,
+    p_receipt_id: receiptId,
+  });
+  if (error) throw new Error(error.message);
+  return (data as ReceiptClaimMatch[] | null)?.[0] ?? null;
+}
+
+async function handleReceiptClaimSearch(ctx: Context, query: string): Promise<void> {
+  if (!ctx.from) return;
+  const matches = await findReceiptClaims(String(ctx.from.id), query);
+  if (!matches.length) {
+    await ctx.reply(`Nenašiel som bloček k „${query}“. Skús názov obchodu alebo položky z dokladu.`);
+    return;
+  }
+  if (matches.length === 1) {
+    await ctx.reply('✅ Našiel som bloček. Posielam jeho pôvodnú fotografiu.');
+    await sendReceiptForClaim(ctx, matches[0]);
+    return;
+  }
+
+  const keyboard = new InlineKeyboard();
+  for (const receipt of matches) {
+    const merchant = receipt.merchant_name?.trim() || 'Neznámy obchod';
+    const date = receipt.receipt_date ?? 'bez dátumu';
+    const amount = receipt.total_amount_minor === null ? '' : ` · ${formatAmount(receipt.total_amount_minor, claimCurrency(receipt.currency_code))}`;
+    keyboard.text(`${merchant} · ${date}${amount}`.slice(0, 60), `claim:${receipt.receipt_id}`).row();
+  }
+  await ctx.reply(`Našiel som ${matches.length} bločkov. Vyber ten správny pre reklamáciu:`, { reply_markup: keyboard });
 }
 
 async function ensureTelegramEmailProfile(ctx: Context): Promise<TelegramEmailProfile | null> {
@@ -117,6 +210,7 @@ async function handleReceipt(ctx: Context): Promise<void> {
         receiptDate: ekasa.receiptDate,
         amountMinor: ekasa.amountMinor,
         currencyCode: 'EUR',
+        items: [],
         ocrText: JSON.stringify({ source: 'ekasa_qr', merchantIco: ekasa.merchantIco, qrPayload: ekasa.rawPayload }),
       };
     } else {
@@ -147,6 +241,20 @@ async function handleReceipt(ctx: Context): Promise<void> {
     if (storedFileError || !storedFile) throw new Error(storedFileError?.message ?? 'Receipt file metadata failed');
     const { data: receipt, error: receiptError } = await supabase.from('ofa_receipts').insert({ workspace_id: saved.result.workspace_id, file_id: storedFile.id, uploaded_by_user_id: transaction.created_by_user_id, status: 'completed', merchant_name: extraction.merchantName, receipt_date: extraction.receiptDate, total_amount_minor: extraction.amountMinor, currency_code: 'EUR', ocr_text: extraction.ocrText, ocr_language: 'sk' }).select('id').single();
     if (receiptError || !receipt) throw new Error(receiptError?.message ?? 'Receipt metadata failed');
+    if (extraction.items.length) {
+      stage = 'uloženie položiek bločku';
+      const { error: receiptItemsError } = await supabase.from('receipt_line_items').insert(extraction.items.map((item, index) => ({
+        workspace_id: saved.result.workspace_id,
+        receipt_id: receipt.id,
+        line_number: index + 1,
+        item_name: item.name,
+        quantity: item.quantity,
+        unit_amount_minor: item.unitAmountMinor,
+        total_amount_minor: item.totalAmountMinor,
+        currency_code: extraction.currencyCode,
+      })));
+      if (receiptItemsError) throw new Error(receiptItemsError.message);
+    }
     stage = 'uloženie OCR výsledku';
     const { error: ocrRunError } = await supabase.from('receipt_ocr_runs').insert({ receipt_id: receipt.id, provider: ekasa ? 'ekasa' : 'openai', provider_model: ekasa ? 'mdu-api-v1' : 'gpt-4o-mini', status: 'completed', extracted_data: extraction, confidence: ekasa ? 1 : 0.8, completed_at: new Date().toISOString() });
     if (ocrRunError) throw new Error(ocrRunError.message);
@@ -208,6 +316,31 @@ export function createTelegramBot(): Bot {
       await ctx.reply('Párovací kód je neplatný alebo už vypršal. Vygeneruj nový kód vo webovom prehľade.');
     }
   });
+  bot.callbackQuery(/^claim:([0-9a-f-]{36})$/i, async (ctx) => {
+    if (!claimUpdate(ctx.update.update_id)) return;
+    try {
+      await ctx.answerCallbackQuery();
+      if (ctx.chat?.type !== 'private' || !ctx.from) return;
+      const profile = await ensureTelegramEmailProfile(ctx);
+      if (!profile?.email) {
+        await ctx.reply('Pred dohľadaním bločku mi najprv pošli svoju e-mailovú adresu v tvare meno@example.com.');
+        return;
+      }
+      const receipt = await getReceiptClaim(String(ctx.from.id), ctx.match[1]);
+      if (!receipt) {
+        await ctx.reply('Tento bloček už nie je dostupný alebo k nemu nemáš prístup. Skús vyhľadávanie znova.');
+        return;
+      }
+      await sendReceiptForClaim(ctx, receipt);
+    } catch (error) {
+      console.error('Telegram receipt claim selection failed', {
+        updateId: ctx.update.update_id,
+        telegramUserId: ctx.from?.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      try { await ctx.reply('❌ Bloček sa nepodarilo odoslať. Skús výber zopakovať o chvíľu.'); } catch { /* update is already acknowledged */ }
+    }
+  });
   bot.on('message', async (ctx) => {
     if (ctx.chat?.type !== 'private') return;
     if (!claimUpdate(ctx.update.update_id)) {
@@ -238,6 +371,26 @@ export function createTelegramBot(): Bot {
       const text = ctx.message.text;
       if (!text) {
         await ctx.reply('Podporujem textové správy, hlasové správy a fotky bločkov.');
+        return;
+      }
+
+      if (isReceiptClaimRequest(text)) {
+        const query = receiptClaimQuery(text);
+        if (!query) {
+          await ctx.reply('Napíš, prosím, čo hľadáš. Napríklad: „reklamácia Lidl“ alebo „potrebujem bloček za kávu“.');
+          return;
+        }
+        try {
+          await handleReceiptClaimSearch(ctx, query);
+        } catch (claimError) {
+          console.error('Telegram receipt claim search failed', {
+            updateId: ctx.update.update_id,
+            telegramUserId: ctx.from.id,
+            query,
+            error: claimError instanceof Error ? claimError.message : String(claimError),
+          });
+          await ctx.reply('❌ Bločky sa teraz nepodarilo vyhľadať. Skús to prosím o chvíľu znova.');
+        }
         return;
       }
 

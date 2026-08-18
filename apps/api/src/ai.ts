@@ -78,7 +78,21 @@ export async function transcribeVoice(audio: Buffer, fileName: string): Promise<
   return transcription.text.trim();
 }
 
-export type ReceiptExtraction = { merchantName: string | null; receiptDate: string | null; amountMinor: number | null; currencyCode: 'EUR'; ocrText: string };
+export type ReceiptLineItemExtraction = {
+  name: string;
+  quantity: number | null;
+  unitAmountMinor: number | null;
+  totalAmountMinor: number | null;
+};
+
+export type ReceiptExtraction = {
+  merchantName: string | null;
+  receiptDate: string | null;
+  amountMinor: number | null;
+  currencyCode: 'EUR';
+  items: ReceiptLineItemExtraction[];
+  ocrText: string;
+};
 export type ExpenseCategoryAiResult = { categorySlug: string; confidence: number; reason: string };
 
 const expenseCategorizationPrompt = `Si klasifikátor výdavkov pre slovenského osobného finančného asistenta. Vráť výhradne JSON vo formáte {"categorySlug":"...","confidence":0 až 1,"reason":"stručné vysvetlenie"}. Môžeš vrátiť iba jednu z kategórií: auto, byvanie, domacnost, potraviny, restauracie, poistenie, zdravie, drogeria, oblecenie, elektronika, deti, dovolenka, zabava, ostatne.
@@ -131,12 +145,37 @@ export async function extractReceipt(image: Buffer, mimeType: string): Promise<R
   const result = await requireClient().chat.completions.create({
     model: 'gpt-4o-mini',
     response_format: { type: 'json_object' },
-    messages: [{ role: 'system', content: 'Extract a Slovak receipt. Return JSON only: merchantName (string|null), receiptDate (YYYY-MM-DD|null), amountMinor (integer|null, EUR cents), ocrText (string).' }, {
+    messages: [{ role: 'system', content: 'Extract a Slovak receipt. Return JSON only: merchantName (string|null), receiptDate (YYYY-MM-DD|null), amountMinor (integer|null, EUR cents), items (array of legible purchased product lines, maximum 80; each item is {name:string, quantity:number|null, unitAmountMinor:integer|null, totalAmountMinor:integer|null}, with all amounts in EUR cents), ocrText (string). Never include payment, change, VAT summary, total, discount, card or cash rows in items. Do not invent unreadable product names or prices; omit uncertain lines.' }, {
       role: 'user', content: [{ type: 'text', text: 'Read this receipt.' }, { type: 'image_url', image_url: { url: `data:${mimeType};base64,${image.toString('base64')}` } }],
     }],
   });
   const parsed = JSON.parse(result.choices[0]?.message.content ?? '{}') as Partial<ReceiptExtraction>;
-  return { merchantName: typeof parsed.merchantName === 'string' ? parsed.merchantName : null, receiptDate: typeof parsed.receiptDate === 'string' ? parsed.receiptDate : null, amountMinor: Number.isSafeInteger(parsed.amountMinor) && (parsed.amountMinor ?? 0) > 0 ? parsed.amountMinor! : null, currencyCode: 'EUR', ocrText: typeof parsed.ocrText === 'string' ? parsed.ocrText : '' };
+  const items = Array.isArray(parsed.items)
+    ? parsed.items.slice(0, 80).flatMap((candidate): ReceiptLineItemExtraction[] => {
+      if (!candidate || typeof candidate !== 'object') return [];
+      const item = candidate as Partial<ReceiptLineItemExtraction>;
+      const name = typeof item.name === 'string' ? item.name.trim().replace(/\s+/g, ' ') : '';
+      if (!name || name.length > 500) return [];
+      const quantity = typeof item.quantity === 'number' && Number.isFinite(item.quantity) && item.quantity > 0 && item.quantity <= 1_000_000
+        ? item.quantity
+        : null;
+      const unitAmountMinor = Number.isSafeInteger(item.unitAmountMinor) && (item.unitAmountMinor ?? 0) >= 0
+        ? item.unitAmountMinor!
+        : null;
+      const totalAmountMinor = Number.isSafeInteger(item.totalAmountMinor) && (item.totalAmountMinor ?? 0) >= 0
+        ? item.totalAmountMinor!
+        : null;
+      return [{ name, quantity, unitAmountMinor, totalAmountMinor }];
+    })
+    : [];
+  return {
+    merchantName: typeof parsed.merchantName === 'string' ? parsed.merchantName : null,
+    receiptDate: typeof parsed.receiptDate === 'string' ? parsed.receiptDate : null,
+    amountMinor: Number.isSafeInteger(parsed.amountMinor) && (parsed.amountMinor ?? 0) > 0 ? parsed.amountMinor! : null,
+    currencyCode: 'EUR',
+    items,
+    ocrText: typeof parsed.ocrText === 'string' ? parsed.ocrText : '',
+  };
 }
 
 export async function monthlyCommentary(summary: string): Promise<string> {

@@ -105,7 +105,7 @@ try {
     } else {
       try {
         await telegramBot.api.setWebhook(`${config.BASE_URL}/api/telegram/webhook`, {
-          allowed_updates: ['message'],
+          allowed_updates: ['message', 'callback_query'],
           ...(config.TELEGRAM_WEBHOOK_SECRET ? { secret_token: config.TELEGRAM_WEBHOOK_SECRET } : {}),
         });
         app.log.info({ webhookUrl: `${config.BASE_URL}/api/telegram/webhook` }, 'Telegram webhook registered');
