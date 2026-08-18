@@ -38,12 +38,14 @@ services:
     buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm build:web
     staticPublishPath: ./apps/web/dist
     autoDeploy: true
-    routes:
-      - type: rewrite
-        source: /*
-        destination: /index.html
     envVars:
+      - key: NODE_VERSION
+        value: 22.14.0
       - key: VITE_SUPABASE_URL
         sync: false
       - key: VITE_SUPABASE_PUBLISHABLE_KEY
         sync: false
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
