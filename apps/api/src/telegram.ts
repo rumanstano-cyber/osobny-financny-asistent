@@ -11,6 +11,22 @@ import { downloadTelegramFile } from './telegram-files.js';
 import { currentMonthVisualReport } from './reports.js';
 
 type RpcResult = { transaction_id: string; workspace_id: string; was_duplicate: boolean };
+type LastTransaction = {
+  transaction_id: string;
+  transaction_type: 'income' | 'expense' | 'transfer';
+  amount_minor: number;
+  currency_code: string;
+  category_name: string | null;
+  note: string | null;
+  occurred_at: string;
+};
+type CorrectedTransaction = {
+  transaction_id: string;
+  amount_minor: number;
+  currency_code: string;
+  category_name: string | null;
+  note: string | null;
+};
 type ReceiptClaimMatch = {
   receipt_id: string;
   merchant_name: string | null;
@@ -34,6 +50,22 @@ function isCurrentMonthReportRequest(text: string): boolean {
 
 function isReceiptClaimRequest(text: string): boolean {
   return /reklam|blo[cč]ek|doklad|účten/iu.test(text);
+}
+
+function isCancelLastTransactionRequest(text: string): boolean {
+  return /\b(zruš|zrus|vymaž|vymaz|odvolaj)\b.*\b(posledn\p{L}*|naposledy)\b/iu.test(text);
+}
+
+function correctionText(text: string): string | null {
+  if (!/^oprav\b/iu.test(text.trim())) return null;
+  const value = text
+    .trim()
+    .replace(/^oprav(?:\s+mi)?\s*/iu, '')
+    .replace(/^posledn\p{L}*(?:\s+z[aá]pis\p{L}*)?\s*/iu, '')
+    .replace(/^na\s*/iu, '')
+    .replace(/^[:\-]\s*/u, '')
+    .trim();
+  return value || null;
 }
 
 /** Extracts only the meaningful search phrase from natural Slovak claim requests. */
@@ -64,6 +96,49 @@ function claimCaption(receipt: ReceiptClaimMatch): string {
   const date = receipt.receipt_date ?? 'dátum sa nepodarilo prečítať';
   const amount = receipt.total_amount_minor === null ? 'suma sa nepodarila prečítať' : formatAmount(receipt.total_amount_minor, claimCurrency(receipt.currency_code));
   return `🧾 <b>Bločok pre reklamáciu</b>\n<b>Obchod:</b> ${merchant}\n<b>Dátum:</b> ${date}${item}\n<b>Celková suma:</b> ${amount}`;
+}
+
+function transactionCurrency(value: string): Parameters<typeof formatAmount>[1] {
+  return value === 'CZK' || value === 'USD' || value === 'GBP' || value === 'HUF' || value === 'PLN' || value === 'EUR' ? value : 'EUR';
+}
+
+function lastTransactionLabel(transaction: LastTransaction): string {
+  const category = transaction.category_name ? ` · ${transaction.category_name}` : '';
+  const note = transaction.note?.trim() ? ` (${transaction.note.trim()})` : '';
+  return `${transaction.transaction_type === 'income' ? 'Príjem' : 'Výdavok'}: ${formatAmount(transaction.amount_minor, transactionCurrency(transaction.currency_code))}${category}${note}`;
+}
+
+async function getLastTransaction(telegramUserId: string): Promise<LastTransaction | null> {
+  const { data, error } = await supabase.rpc('get_last_telegram_transaction', { p_telegram_user_id: telegramUserId });
+  if (error) throw new Error(error.message);
+  return (data as LastTransaction[] | null)?.[0] ?? null;
+}
+
+async function voidTransaction(telegramUserId: string, transactionId: string): Promise<LastTransaction | null> {
+  const { data, error } = await supabase.rpc('void_telegram_transaction', {
+    p_telegram_user_id: telegramUserId,
+    p_transaction_id: transactionId,
+  });
+  if (error) throw new Error(error.message);
+  return (data as LastTransaction[] | null)?.[0] ?? null;
+}
+
+async function correctLastTransaction(telegramUserId: string, text: string, categorizationInput: CategorizationInput = {}): Promise<CorrectedTransaction | null> {
+  const parsed = parseFinancialMessage(text);
+  if (!parsed) return null;
+  const category = parsed.transactionType === 'expense'
+    ? await categorizeExpense({ messageText: text, ...categorizationInput })
+    : { slug: parsed.categorySlug, label: parsed.categoryLabel };
+  const { data, error } = await supabase.rpc('correct_last_telegram_transaction', {
+    p_telegram_user_id: telegramUserId,
+    p_amount_minor: parsed.amountMinor,
+    p_currency_code: parsed.currencyCode,
+    p_transaction_type: parsed.transactionType,
+    p_category_slug: category.slug,
+    p_note: parsed.note,
+  });
+  if (error) throw new Error(error.message);
+  return (data as CorrectedTransaction[] | null)?.[0] ?? null;
 }
 
 async function sendReceiptForClaim(ctx: Context, receipt: ReceiptClaimMatch): Promise<void> {
@@ -288,6 +363,31 @@ export function createTelegramBot(): Bot {
       try { await ctx.reply('❌ Bloček sa nepodarilo odoslať. Skús výber zopakovať o chvíľu.'); } catch { /* update is already acknowledged */ }
     }
   });
+  bot.callbackQuery(/^txn:void:([0-9a-f-]{36})$/i, async (ctx) => {
+    if (!claimUpdate(ctx.update.update_id)) return;
+    try {
+      await ctx.answerCallbackQuery();
+      if (ctx.chat?.type !== 'private' || !ctx.from) return;
+      const voided = await voidTransaction(String(ctx.from.id), ctx.match[1]);
+      if (!voided) {
+        await ctx.reply('Tento zápis už nie je možné zrušiť. Možno bol už opravený alebo zrušený.');
+        return;
+      }
+      await ctx.reply(`🗑️ Zápis bol zrušený: ${formatAmount(voided.amount_minor, transactionCurrency(voided.currency_code))}${voided.note?.trim() ? ` (${voided.note.trim()})` : ''}. Do reportov sa už nezapočítava.`);
+    } catch (error) {
+      console.error('Telegram transaction void failed', {
+        updateId: ctx.update.update_id,
+        telegramUserId: ctx.from?.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      try { await ctx.reply('❌ Zápis sa nepodarilo zrušiť. Skús to prosím o chvíľu znova.'); } catch { /* update is already acknowledged */ }
+    }
+  });
+  bot.callbackQuery(/^txn:keep$/i, async (ctx) => {
+    if (!claimUpdate(ctx.update.update_id)) return;
+    await ctx.answerCallbackQuery({ text: 'Zápis ostáva bez zmeny.' });
+    try { await ctx.editMessageReplyMarkup({ reply_markup: undefined }); } catch { /* the original message may no longer be editable */ }
+  });
   bot.on('message', async (ctx) => {
     if (ctx.chat?.type !== 'private') return;
     if (!claimUpdate(ctx.update.update_id)) {
@@ -316,6 +416,37 @@ export function createTelegramBot(): Bot {
       const text = ctx.message.text;
       if (!text) {
         await ctx.reply('Podporujem textové správy, hlasové správy a fotky bločkov.');
+        return;
+      }
+
+      if (/^oprav\b/iu.test(text.trim())) {
+        const replacement = correctionText(text);
+        if (!replacement) {
+          const last = await getLastTransaction(String(ctx.from.id));
+          await ctx.reply(last
+            ? `Posledný zápis je: ${lastTransactionLabel(last)}\n\nNapíš napríklad: <code>oprav posledný zápis na Obed 8,50 €</code>`
+            : 'Zatiaľ nemáš žiadny potvrdený zápis na opravu.', { parse_mode: 'HTML' });
+          return;
+        }
+        const corrected = await correctLastTransaction(String(ctx.from.id), replacement);
+        if (!corrected) {
+          await ctx.reply('Nerozumel som oprave alebo nemáš žiadny potvrdený zápis. Skús napríklad: „oprav posledný zápis na Obed 8,50 €“.');
+          return;
+        }
+        await ctx.reply(`✏️ Opravené: ${corrected.category_name ?? 'Výdavok'} – ${formatAmount(corrected.amount_minor, transactionCurrency(corrected.currency_code))}${corrected.note?.trim() ? ` (${corrected.note.trim()})` : ''}`);
+        return;
+      }
+
+      if (isCancelLastTransactionRequest(text)) {
+        const last = await getLastTransaction(String(ctx.from.id));
+        if (!last) {
+          await ctx.reply('Zatiaľ nemáš žiadny potvrdený zápis na zrušenie.');
+          return;
+        }
+        const keyboard = new InlineKeyboard()
+          .text('Áno, zrušiť', `txn:void:${last.transaction_id}`)
+          .text('Ponechať', 'txn:keep');
+        await ctx.reply(`⚠️ Naozaj chceš zrušiť posledný zápis?\n${lastTransactionLabel(last)}`, { reply_markup: keyboard });
         return;
       }
 
