@@ -8,7 +8,7 @@ import { formatAmount, parseFinancialMessage } from './finance-parser.js';
 import { optimizeReceiptImage } from './receipt-image.js';
 import { supabase } from './supabase.js';
 import { downloadTelegramFile } from './telegram-files.js';
-import { currentMonthVisualReport } from './reports.js';
+import { currentMonthVisualReport, currentWeekSummary } from './reports.js';
 
 type RpcResult = { transaction_id: string; workspace_id: string; was_duplicate: boolean };
 type LastTransaction = {
@@ -46,6 +46,10 @@ function name(ctx: Context) { return [ctx.from?.first_name, ctx.from?.last_name]
 /** A report request must be handled before attempting to parse an amount. */
 function isCurrentMonthReportRequest(text: string): boolean {
   return /\breport\b|prehľad|prehlad|sumár|sumar|štatistik|koľko som minul|stav mojich financií|súhrn|suhrn/iu.test(text);
+}
+
+function isCurrentWeekReportRequest(text: string): boolean {
+  return /týžden|tyzden|tento\s+týždeň|tento\s+tyzden|koľko som minul tento týždeň|koľko som minul tento tyzden/iu.test(text);
 }
 
 function isReceiptClaimRequest(text: string): boolean {
@@ -467,6 +471,11 @@ export function createTelegramBot(): Bot {
           });
           await ctx.reply('❌ Bločky sa teraz nepodarilo vyhľadať. Skús to prosím o chvíľu znova.');
         }
+        return;
+      }
+
+      if (isCurrentWeekReportRequest(text)) {
+        await ctx.reply(await currentWeekSummary(String(ctx.from.id)), { parse_mode: 'HTML' });
         return;
       }
 

@@ -12,6 +12,7 @@ type MembershipRow = { workspace_id: string; user_id: string; role: string };
 type TelegramAccountRow = { user_id: string; external_account_id: string };
 type UserEmailRow = { id: string; email: string | null };
 type CurrentMonthReportLookup = { report: MonthlyReport; unavailableMessage: null } | { report: null; unavailableMessage: string };
+type ReportPeriod = { start: Date; end: Date; label: string };
 
 export type CategorySpend = { name: string; slug: string; amountMinor: number };
 export type MonthlyReport = {
@@ -45,8 +46,8 @@ function zonedDateParts(date: Date): { year: number; month: number; day: number 
   return { year: value('year'), month: value('month'), day: value('day') };
 }
 
-function zonedMonthBoundary(year: number, month: number): Date {
-  const probe = new Date(Date.UTC(year, month - 1, 1, 12));
+function zonedDateBoundary(year: number, month: number, day = 1): Date {
+  const probe = new Date(Date.UTC(year, month - 1, day, 12));
   const offsetName = new Intl.DateTimeFormat('en-US', {
     timeZone: reportTimeZone,
     timeZoneName: 'longOffset',
@@ -55,25 +56,40 @@ function zonedMonthBoundary(year: number, month: number): Date {
   const offsetMinutes = match
     ? (Number(match[2]) * 60 + Number(match[3])) * (match[1] === '+' ? 1 : -1)
     : 0;
-  return new Date(Date.UTC(year, month - 1, 1) - offsetMinutes * 60_000);
+  return new Date(Date.UTC(year, month - 1, day) - offsetMinutes * 60_000);
 }
 
-function currentMonthPeriod(referenceDate = new Date()): { start: Date; end: Date; monthLabel: string } {
+function currentMonthPeriod(referenceDate = new Date()): ReportPeriod {
   const { year, month } = zonedDateParts(referenceDate);
   const nextYear = month === 12 ? year + 1 : year;
   const nextMonth = month === 12 ? 1 : month + 1;
-  const start = zonedMonthBoundary(year, month);
-  const end = zonedMonthBoundary(nextYear, nextMonth);
+  const start = zonedDateBoundary(year, month);
+  const end = zonedDateBoundary(nextYear, nextMonth);
   const monthLabel = new Intl.DateTimeFormat('sk-SK', { timeZone: reportTimeZone, month: 'long', year: 'numeric' }).format(start);
-  return { start, end, monthLabel };
+  return { start, end, label: monthLabel };
+}
+
+/** Calendar week from Monday 00:00 through the following Monday, in Bratislava time. */
+function currentWeekPeriod(referenceDate = new Date()): ReportPeriod {
+  const { year, month, day } = zonedDateParts(referenceDate);
+  const localDate = new Date(Date.UTC(year, month - 1, day));
+  const isoWeekday = localDate.getUTCDay() || 7;
+  const monday = new Date(localDate);
+  monday.setUTCDate(monday.getUTCDate() - isoWeekday + 1);
+  const nextMonday = new Date(monday);
+  nextMonday.setUTCDate(nextMonday.getUTCDate() + 7);
+  return {
+    start: zonedDateBoundary(monday.getUTCFullYear(), monday.getUTCMonth() + 1, monday.getUTCDate()),
+    end: zonedDateBoundary(nextMonday.getUTCFullYear(), nextMonday.getUTCMonth() + 1, nextMonday.getUTCDate()),
+    label: 'tento týždeň',
+  };
 }
 
 function categoryFromAssignment(value: CategoryAssignmentRow['category']): { name: string; slug: string } | null {
   return Array.isArray(value) ? value[0] ?? null : value;
 }
 
-export async function buildMonthlyReport(workspaceId: string, currencyCode: string, referenceDate = new Date()): Promise<MonthlyReport> {
-  const period = currentMonthPeriod(referenceDate);
+async function buildReportForPeriod(workspaceId: string, currencyCode: string, period: ReportPeriod): Promise<MonthlyReport> {
   const { data, error } = await supabase
     .from('financial_transactions')
     .select('id, transaction_type, amount_minor, currency_code')
@@ -116,13 +132,21 @@ export async function buildMonthlyReport(workspaceId: string, currencyCode: stri
   return {
     periodStart: period.start,
     periodEnd: period.end,
-    monthLabel: period.monthLabel,
+    monthLabel: period.label,
     currencyCode,
     incomeMinor,
     expenseMinor,
     balanceMinor: incomeMinor - expenseMinor,
     categories: [...categoryTotals.values()].sort((left, right) => right.amountMinor - left.amountMinor),
   };
+}
+
+export async function buildMonthlyReport(workspaceId: string, currencyCode: string, referenceDate = new Date()): Promise<MonthlyReport> {
+  return buildReportForPeriod(workspaceId, currencyCode, currentMonthPeriod(referenceDate));
+}
+
+async function buildCurrentWeekReport(workspaceId: string, currencyCode: string, referenceDate = new Date()): Promise<MonthlyReport> {
+  return buildReportForPeriod(workspaceId, currencyCode, currentWeekPeriod(referenceDate));
 }
 
 function reportNumbers(report: MonthlyReport, previousExpenseMinor?: number): string {
@@ -362,12 +386,45 @@ async function loadCurrentMonthReport(telegramUserId: string): Promise<CurrentMo
   return { report, unavailableMessage: null };
 }
 
+async function loadCurrentWeekReport(telegramUserId: string): Promise<CurrentMonthReportLookup> {
+  const { data: account } = await supabase.from('channel_accounts').select('user_id').eq('channel', 'telegram').eq('external_account_id', telegramUserId).is('unlinked_at', null).single();
+  if (!account) return { report: null, unavailableMessage: 'Zatiaľ nemáš žiadne uložené transakcie.' };
+  const { data: membership } = await supabase.from('workspace_members').select('workspace_id').eq('user_id', account.user_id).eq('status', 'active').limit(1).single();
+  if (!membership) return { report: null, unavailableMessage: 'Nenašiel som finančný priestor.' };
+  const { data: workspace } = await supabase.from('workspaces').select('base_currency_code').eq('id', membership.workspace_id).is('deleted_at', null).single();
+  if (!workspace) return { report: null, unavailableMessage: 'Nenašiel som finančný priestor.' };
+  const report = await buildCurrentWeekReport(membership.workspace_id, workspace.base_currency_code);
+  return { report, unavailableMessage: null };
+}
+
 export async function currentMonthSummary(telegramUserId: string): Promise<string> {
   const lookup = await loadCurrentMonthReport(telegramUserId);
   if (!lookup.report) return lookup.unavailableMessage;
   const report = lookup.report;
   const summary = reportNumbers(report);
   try { return `${summary}\n${await monthlyCommentary(summary)}`; } catch { return summary; }
+}
+
+/** Compact text-first report intended for an on-demand Telegram request. */
+export async function currentWeekSummary(telegramUserId: string): Promise<string> {
+  const lookup = await loadCurrentWeekReport(telegramUserId);
+  if (!lookup.report) return lookup.unavailableMessage;
+  const report = lookup.report;
+  const topCategories = report.categories.slice(0, 3).map((item) => {
+    const share = report.expenseMinor > 0 ? Math.round((item.amountMinor / report.expenseMinor) * 100) : 0;
+    return `• ${htmlEscape(item.name)}: ${htmlEscape(formatCurrency(item.amountMinor, report.currencyCode))} (${share} %)`;
+  });
+  const balance = formatCurrency(Math.abs(report.balanceMinor), report.currencyCode);
+  const balancePrefix = report.balanceMinor > 0 ? '+' : report.balanceMinor < 0 ? '-' : '';
+  return [
+    '📅 <b>Týždenný prehľad</b>',
+    `🟢 <b>Príjmy: +${htmlEscape(formatCurrency(report.incomeMinor, report.currencyCode))}</b>`,
+    `🔴 <b>Výdavky: -${htmlEscape(formatCurrency(report.expenseMinor, report.currencyCode))}</b>`,
+    `⚪ <b>Bilancia: ${balancePrefix}${htmlEscape(balance)}</b>`,
+    '',
+    '<b>Top kategórie:</b>',
+    ...(topCategories.length > 0 ? topCategories : ['• Zatiaľ žiadne výdavky']),
+  ].join('\n');
 }
 
 export type CurrentMonthVisualReport = { chartUrl: string | null; caption: string };
