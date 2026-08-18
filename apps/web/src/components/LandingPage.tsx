@@ -53,7 +53,7 @@ export function LandingPage() {
         <div className="section-intro"><p className="landing-eyebrow">JEDNODUCHÝ NÁVYK</p><h2 id="how-heading">Tri kroky k lepšiemu prehľadu.</h2></div>
         <div className="steps-grid">
           <article><span className="step-number">01</span><div className="step-icon">⌁</div><h3>Napíš správu</h3><p>Stačí „Obed 12 €“ alebo „Benzín 60 €“. Asistent rozpozná sumu aj kategóriu.</p></article>
-          <article><span className="step-number">02</span><div className="step-icon">◫</div><h3>Pošli bloček</h3><p>Fotku uložíme, prečítame údaje a prepojíme ju s výdavkom pre neskoršie dohľadanie.</p></article>
+          <article><span className="step-number">02</span><div className="step-icon">◫</div><h3>Pošli bloček</h3><p>Fotku uložíme, prečítame údaje a prepojíme ju s výdavkom. Potom stačí napísať „reklamácia topánky“ alebo „bloček Lidl“ a asistent nájde doklad pre reklamáciu.</p></article>
           <article><span className="step-number">03</span><div className="step-icon">◔</div><h3>Pozri si prehľad</h3><p>Opýtaj sa na report. Uvidíš príjmy, výdavky a kategórie bez hľadania v banke.</p></article>
         </div>
       </section>
