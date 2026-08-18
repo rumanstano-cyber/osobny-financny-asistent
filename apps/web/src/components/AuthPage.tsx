@@ -1,11 +1,11 @@
 import { useState } from 'react';
 import type { FormEvent } from 'react';
-import { supabase } from '../supabase';
+import { getSupabaseClient } from '../supabase';
 
 type Mode = 'sign-in' | 'sign-up';
 
-export function AuthPage() {
-  const [mode, setMode] = useState<Mode>('sign-in');
+export function AuthPage({ initialMode = 'sign-in' }: { initialMode?: Mode }) {
+  const [mode, setMode] = useState<Mode>(initialMode);
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -17,6 +17,7 @@ export function AuthPage() {
     setMessage('');
     setBusy(true);
     try {
+      const supabase = getSupabaseClient();
       if (mode === 'sign-up') {
         if (password.length < 8) throw new Error('Heslo musí mať aspoň 8 znakov.');
         const { data, error } = await supabase.auth.signUp({

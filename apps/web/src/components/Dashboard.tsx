@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Session } from '@supabase/supabase-js';
-import { supabase } from '../supabase';
+import { getSupabaseClient } from '../supabase';
 
 type Workspace = { id: string; name: string; base_currency_code: string };
 type Transaction = {
@@ -29,6 +29,7 @@ function categoryName(transaction: Transaction) {
 }
 
 export function Dashboard({ session }: { session: Session }) {
+  const supabase = getSupabaseClient();
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [workspaceId, setWorkspaceId] = useState('');
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -114,9 +115,14 @@ export function Dashboard({ session }: { session: Session }) {
     setError('');
     const { data, error: pairingError } = await supabase.rpc('create_telegram_link_code');
     if (pairingError) { setError(pairingError.message); return; }
-    const value = Array.isArray(data) ? data[0] : null;
-    if (!value?.code || !value.expires_at) { setError('Párovací kód sa nepodarilo vytvoriť.'); return; }
-    setPairingCode({ code: value.code as string, expiresAt: value.expires_at as string });
+    const value = Array.isArray(data)
+      ? data[0] as { code?: unknown; expires_at?: unknown } | undefined
+      : undefined;
+    if (typeof value?.code !== 'string' || typeof value.expires_at !== 'string') {
+      setError('Párovací kód sa nepodarilo vytvoriť.');
+      return;
+    }
+    setPairingCode({ code: value.code, expiresAt: value.expires_at });
   }
 
   return (
