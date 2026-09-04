@@ -1,0 +1,42 @@
+-- Schedule the existing Render API from Supabase without storing secrets in Git.
+create extension if not exists pg_net;
+create extension if not exists pg_cron with schema pg_catalog;
+
+do $$
+begin
+  if not exists (select 1 from vault.secrets where name = 'weekly_report_api_base_url') then
+    raise exception 'Missing Vault secret weekly_report_api_base_url';
+  end if;
+
+  if not exists (select 1 from vault.secrets where name = 'weekly_report_internal_cron_secret') then
+    raise exception 'Missing Vault secret weekly_report_internal_cron_secret';
+  end if;
+end;
+$$;
+
+-- pg_cron schedules in UTC. Run every 15 minutes on Monday as a retry window,
+-- but make the HTTP request only at 08:00–08:45 Europe/Bratislava. PostgreSQL's
+-- timezone database handles both CET and CEST automatically.
+select cron.schedule(
+  'weekly-financial-report-bratislava',
+  '*/15 * * * 1',
+  $cron$
+    with local_clock as (
+      select now() at time zone 'Europe/Bratislava' as local_time
+    )
+    select net.http_post(
+      url := (select decrypted_secret from vault.decrypted_secrets where name = 'weekly_report_api_base_url')
+        || '/internal/reports/weekly/run',
+      headers := jsonb_build_object(
+        'Content-Type', 'application/json',
+        'X-Internal-Cron-Secret', (select decrypted_secret from vault.decrypted_secrets where name = 'weekly_report_internal_cron_secret')
+      ),
+      body := '{}'::jsonb,
+      timeout_milliseconds := 120000
+    )
+    from local_clock
+    where extract(isodow from local_time) = 1
+      and extract(hour from local_time) = 8
+      and extract(minute from local_time) in (0, 15, 30, 45);
+  $cron$
+);
