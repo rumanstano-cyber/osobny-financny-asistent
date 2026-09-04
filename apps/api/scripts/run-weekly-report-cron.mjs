@@ -1,6 +1,8 @@
+import { pathToFileURL } from 'node:url';
+
 const timeZone = 'Europe/Bratislava';
 
-function localScheduleParts(now = new Date()) {
+export function localScheduleParts(now = new Date()) {
   const parts = new Intl.DateTimeFormat('en-GB', {
     timeZone,
     weekday: 'short',
@@ -12,12 +14,12 @@ function localScheduleParts(now = new Date()) {
   return { weekday: value('weekday'), hour: Number(value('hour')), minute: Number(value('minute')) };
 }
 
-function isScheduledRun(now = new Date()) {
+export function isScheduledRun(now = new Date()) {
   const { weekday, hour, minute } = localScheduleParts(now);
   return weekday === 'Mon' && hour === 8 && minute === 0;
 }
 
-async function main() {
+export async function main() {
   if (!isScheduledRun()) {
     console.info('Weekly report cron skipped outside Monday 08:00 Europe/Bratislava.', localScheduleParts());
     return;
@@ -36,7 +38,9 @@ async function main() {
   console.info('Weekly report endpoint completed successfully.');
 }
 
-main().catch((error) => {
-  console.error('Weekly report cron failed.', error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error('Weekly report cron failed.', error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}
