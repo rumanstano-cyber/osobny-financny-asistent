@@ -1,15 +1,16 @@
 import Fastify from 'fastify';
 import { config } from './config.js';
 import { startMonthlyReportScheduler } from './monthly-report-scheduler.js';
-import { currentMonthSummary, sendMonthlyReports } from './reports.js';
+import { currentMonthSummary, sendMonthlyReports, sendWeeklyReports } from './reports.js';
 import { createTelegramBot } from './telegram.js';
+import { previousClosedWeekReference, startWeeklyReportScheduler } from './weekly-report-scheduler.js';
 
 const app = Fastify({ logger: { level: config.NODE_ENV === 'production' ? 'info' : 'debug' } });
 const telegramBot = createTelegramBot();
 type TelegramUpdate = Parameters<typeof telegramBot.handleUpdate>[0];
 
 let telegramInitialization: Promise<void> | null = null;
-let monthlySchedulerStarted = false;
+let reportSchedulersStarted = false;
 
 /**
  * Telegram's getMe call is external I/O. Do not let a temporary Telegram
@@ -27,9 +28,10 @@ async function ensureTelegramBotInitialized(): Promise<void> {
 }
 
 function startSchedulerOnce(): void {
-  if (monthlySchedulerStarted) return;
+  if (reportSchedulersStarted) return;
   startMonthlyReportScheduler(telegramBot);
-  monthlySchedulerStarted = true;
+  startWeeklyReportScheduler(telegramBot);
+  reportSchedulersStarted = true;
 }
 
 function isAllowedCorsOrigin(origin: string): boolean {
@@ -68,6 +70,12 @@ app.post<{ Params: { telegramUserId: string } }>('/internal/reports/monthly/:tel
 app.post('/internal/reports/monthly/run', async (request, reply) => {
   if (request.headers['x-internal-cron-secret'] !== config.INTERNAL_CRON_SECRET) return reply.code(401).send({ error: 'unauthorized' });
   return sendMonthlyReports(telegramBot);
+});
+
+app.post('/internal/reports/weekly/run', async (request, reply) => {
+  if (request.headers['x-internal-cron-secret'] !== config.INTERNAL_CRON_SECRET) return reply.code(401).send({ error: 'unauthorized' });
+  await ensureTelegramBotInitialized();
+  return sendWeeklyReports(telegramBot, previousClosedWeekReference());
 });
 
 app.post<{ Body: unknown }>('/api/telegram/webhook', async (request, reply) => {

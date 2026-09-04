@@ -5,14 +5,15 @@ import { supabase } from './supabase.js';
 
 const reportTimeZone = 'Europe/Bratislava';
 
-type TransactionRow = { id: string; transaction_type: 'income' | 'expense'; amount_minor: number; currency_code: string };
+export type ReportTransaction = { id: string; transaction_type: 'income' | 'expense'; amount_minor: number; currency_code: string };
 type CategoryAssignmentRow = { transaction_id: string; category: { name: string; slug: string } | { name: string; slug: string }[] | null };
 type WorkspaceRow = { id: string; base_currency_code: string };
 type MembershipRow = { workspace_id: string; user_id: string; role: string };
 type TelegramAccountRow = { user_id: string; external_account_id: string };
 type UserEmailRow = { id: string; email: string | null };
 type CurrentMonthReportLookup = { report: MonthlyReport; unavailableMessage: null } | { report: null; unavailableMessage: string };
-type ReportPeriod = { start: Date; end: Date; label: string };
+export type ReportPeriod = { start: Date; end: Date; label: string };
+type ReportDeliveryType = 'monthly_summary' | 'weekly_summary';
 
 export type CategorySpend = { name: string; slug: string; amountMinor: number };
 export type MonthlyReport = {
@@ -70,7 +71,7 @@ function currentMonthPeriod(referenceDate = new Date()): ReportPeriod {
 }
 
 /** Calendar week from Monday 00:00 through the following Monday, in Bratislava time. */
-function currentWeekPeriod(referenceDate = new Date()): ReportPeriod {
+export function weeklyReportPeriod(referenceDate = new Date()): ReportPeriod {
   const { year, month, day } = zonedDateParts(referenceDate);
   const localDate = new Date(Date.UTC(year, month - 1, day));
   const isoWeekday = localDate.getUTCDay() || 7;
@@ -82,6 +83,28 @@ function currentWeekPeriod(referenceDate = new Date()): ReportPeriod {
     start: zonedDateBoundary(monday.getUTCFullYear(), monday.getUTCMonth() + 1, monday.getUTCDate()),
     end: zonedDateBoundary(nextMonday.getUTCFullYear(), nextMonday.getUTCMonth() + 1, nextMonday.getUTCDate()),
     label: 'tento týždeň',
+  };
+}
+
+export function summarizeReportTransactions(
+  transactions: readonly ReportTransaction[],
+  assignmentByTransaction: ReadonlyMap<string, { name: string; slug: string }>,
+): Pick<MonthlyReport, 'incomeMinor' | 'expenseMinor' | 'balanceMinor' | 'categories'> {
+  const incomeMinor = transactions.filter((item) => item.transaction_type === 'income').reduce((sum, item) => sum + item.amount_minor, 0);
+  const expenseTransactions = transactions.filter((item) => item.transaction_type === 'expense');
+  const expenseMinor = expenseTransactions.reduce((sum, item) => sum + item.amount_minor, 0);
+  const categoryTotals = new Map<string, CategorySpend>();
+  for (const transaction of expenseTransactions) {
+    const category = assignmentByTransaction.get(transaction.id) ?? { name: 'Ostatné', slug: 'ostatne' };
+    const current = categoryTotals.get(category.slug) ?? { ...category, amountMinor: 0 };
+    current.amountMinor += transaction.amount_minor;
+    categoryTotals.set(category.slug, current);
+  }
+  return {
+    incomeMinor,
+    expenseMinor,
+    balanceMinor: incomeMinor - expenseMinor,
+    categories: [...categoryTotals.values()].sort((left, right) => right.amountMinor - left.amountMinor),
   };
 }
 
@@ -101,10 +124,8 @@ async function buildReportForPeriod(workspaceId: string, currencyCode: string, p
     .lt('occurred_at', period.end.toISOString());
   if (error) throw new Error(error.message);
 
-  const transactions = (data ?? []) as TransactionRow[];
-  const incomeMinor = transactions.filter((item) => item.transaction_type === 'income').reduce((sum, item) => sum + item.amount_minor, 0);
+  const transactions = (data ?? []) as ReportTransaction[];
   const expenseTransactions = transactions.filter((item) => item.transaction_type === 'expense');
-  const expenseMinor = expenseTransactions.reduce((sum, item) => sum + item.amount_minor, 0);
 
   const transactionIds = expenseTransactions.map((item) => item.id);
   const assignmentByTransaction = new Map<string, { name: string; slug: string }>();
@@ -121,23 +142,14 @@ async function buildReportForPeriod(workspaceId: string, currencyCode: string, p
     }
   }
 
-  const categoryTotals = new Map<string, CategorySpend>();
-  for (const transaction of expenseTransactions) {
-    const category = assignmentByTransaction.get(transaction.id) ?? { name: 'Ostatné', slug: 'ostatne' };
-    const current = categoryTotals.get(category.slug) ?? { ...category, amountMinor: 0 };
-    current.amountMinor += transaction.amount_minor;
-    categoryTotals.set(category.slug, current);
-  }
+  const summary = summarizeReportTransactions(transactions, assignmentByTransaction);
 
   return {
     periodStart: period.start,
     periodEnd: period.end,
     monthLabel: period.label,
     currencyCode,
-    incomeMinor,
-    expenseMinor,
-    balanceMinor: incomeMinor - expenseMinor,
-    categories: [...categoryTotals.values()].sort((left, right) => right.amountMinor - left.amountMinor),
+    ...summary,
   };
 }
 
@@ -146,7 +158,7 @@ export async function buildMonthlyReport(workspaceId: string, currencyCode: stri
 }
 
 async function buildCurrentWeekReport(workspaceId: string, currencyCode: string, referenceDate = new Date()): Promise<MonthlyReport> {
-  return buildReportForPeriod(workspaceId, currencyCode, currentWeekPeriod(referenceDate));
+  return buildReportForPeriod(workspaceId, currencyCode, weeklyReportPeriod(referenceDate));
 }
 
 function reportNumbers(report: MonthlyReport, previousExpenseMinor?: number): string {
@@ -254,12 +266,12 @@ async function sendReportEmail(report: MonthlyReport, commentary: string, chartU
   return true;
 }
 
-async function claimMonthlyDelivery(workspace: WorkspaceRow, report: MonthlyReport): Promise<string | null> {
+async function claimReportDelivery(workspace: WorkspaceRow, report: MonthlyReport, reportType: ReportDeliveryType): Promise<string | null> {
   const { data, error } = await supabase
     .from('report_deliveries')
     .insert({
       workspace_id: workspace.id,
-      report_type: 'monthly_summary',
+      report_type: reportType,
       period_start: report.periodStart.toISOString(),
       period_end: report.periodEnd.toISOString(),
       base_currency_code: workspace.base_currency_code,
@@ -268,9 +280,54 @@ async function claimMonthlyDelivery(workspace: WorkspaceRow, report: MonthlyRepo
     })
     .select('id')
     .single();
-  if (error?.code === '23505') return null;
+  if (error?.code === '23505') {
+    // A weekly report may be retried only after a confirmed Telegram failure.
+    // The conditional update makes a concurrent scheduler instance lose safely.
+    if (reportType !== 'weekly_summary') return null;
+    const { data: existing, error: existingError } = await supabase
+      .from('report_deliveries')
+      .select('id, status')
+      .eq('workspace_id', workspace.id)
+      .eq('report_type', reportType)
+      .eq('period_start', report.periodStart.toISOString())
+      .maybeSingle();
+    if (existingError) throw new Error(existingError.message);
+    if (!existing || existing.status !== 'failed') return null;
+    const { data: reclaimed, error: reclaimError } = await supabase
+      .from('report_deliveries')
+      .update({ status: 'queued', generated_at: null })
+      .eq('id', existing.id)
+      .eq('status', 'failed')
+      .select('id')
+      .maybeSingle();
+    if (reclaimError) throw new Error(reclaimError.message);
+    return reclaimed?.id ?? null;
+  }
   if (error || !data) throw new Error(error?.message ?? 'Unable to create report delivery');
   return data.id as string;
+}
+
+function wait(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+export async function sendTelegramWithRetry<T>(
+  send: () => Promise<T>,
+  options: { attempts?: number; retryDelayMs?: number; sleep?: (milliseconds: number) => Promise<void> } = {},
+): Promise<T> {
+  const attempts = Math.max(1, options.attempts ?? 3);
+  const retryDelayMs = options.retryDelayMs ?? 750;
+  const sleep = options.sleep ?? wait;
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await send();
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts) await sleep(retryDelayMs * attempt);
+    }
+  }
+  throw lastError;
 }
 
 async function markDelivery(deliveryId: string, status: 'generated' | 'sent' | 'failed'): Promise<void> {
@@ -333,7 +390,7 @@ export async function sendMonthlyReports(bot: Bot, referenceDate = new Date()): 
     if (!workspace) continue;
     try {
       const report = await buildMonthlyReport(workspace.id, workspace.base_currency_code, referenceDate);
-      const deliveryId = await claimMonthlyDelivery(workspace, report);
+      const deliveryId = await claimReportDelivery(workspace, report, 'monthly_summary');
       if (!deliveryId) {
         skipped += 1;
         continue;
@@ -375,6 +432,96 @@ export async function sendMonthlyReports(bot: Bot, referenceDate = new Date()): 
   return { delivered, skipped, failed };
 }
 
+function weeklyTelegramCaption(report: MonthlyReport): string {
+  const topCategories = report.categories.slice(0, 3).map((item) => {
+    const share = report.expenseMinor > 0 ? Math.round((item.amountMinor / report.expenseMinor) * 100) : 0;
+    return `• ${htmlEscape(item.name)}: ${htmlEscape(formatCurrency(item.amountMinor, report.currencyCode))} (${share} %)`;
+  });
+  const balance = formatCurrency(Math.abs(report.balanceMinor), report.currencyCode);
+  const balancePrefix = report.balanceMinor > 0 ? '+' : report.balanceMinor < 0 ? '-' : '';
+  const topCategory = report.categories[0];
+  const insight = topCategory
+    ? `Najviac si minul na <b>${htmlEscape(topCategory.name)}</b>.`
+    : 'Tento týždeň zatiaľ nemáš žiadne výdavky.';
+  return [
+    '📅 <b>Týždenný prehľad</b>',
+    `🟢 <b>Príjmy: +${htmlEscape(formatCurrency(report.incomeMinor, report.currencyCode))}</b>`,
+    `🔴 <b>Výdavky: -${htmlEscape(formatCurrency(report.expenseMinor, report.currencyCode))}</b>`,
+    `⚪ <b>Bilancia: ${balancePrefix}${htmlEscape(balance)}</b>`,
+    '',
+    '<b>Top kategórie:</b>',
+    ...(topCategories.length > 0 ? topCategories : ['• Zatiaľ žiadne výdavky']),
+    '',
+    insight,
+  ].join('\n');
+}
+
+/** Delivers one short closed-week report to every active Telegram member. */
+export async function sendWeeklyReports(bot: Bot, referenceDate = new Date()): Promise<{ delivered: number; skipped: number; failed: number }> {
+  const { data: accounts, error: accountError } = await supabase
+    .from('channel_accounts')
+    .select('user_id, external_account_id')
+    .eq('channel', 'telegram')
+    .is('unlinked_at', null);
+  if (accountError) throw new Error(accountError.message);
+  const telegramAccountByUser = new Map(((accounts ?? []) as TelegramAccountRow[]).map((account) => [account.user_id, account]));
+
+  const { data: memberships, error: membershipError } = await supabase
+    .from('workspace_members')
+    .select('workspace_id, user_id, role')
+    .eq('status', 'active');
+  if (membershipError) throw new Error(membershipError.message);
+  const membershipsByWorkspace = new Map<string, MembershipRow[]>();
+  for (const membership of (memberships ?? []) as MembershipRow[]) {
+    if (!telegramAccountByUser.has(membership.user_id)) continue;
+    const current = membershipsByWorkspace.get(membership.workspace_id) ?? [];
+    current.push(membership);
+    membershipsByWorkspace.set(membership.workspace_id, current);
+  }
+  if (membershipsByWorkspace.size === 0) return { delivered: 0, skipped: 0, failed: 0 };
+
+  const { data: workspaces, error: workspaceError } = await supabase
+    .from('workspaces')
+    .select('id, base_currency_code')
+    .in('id', [...membershipsByWorkspace.keys()])
+    .is('deleted_at', null);
+  if (workspaceError) throw new Error(workspaceError.message);
+  const workspaceById = new Map(((workspaces ?? []) as WorkspaceRow[]).map((workspace) => [workspace.id, workspace]));
+
+  let delivered = 0;
+  let skipped = 0;
+  let failed = 0;
+  for (const [workspaceId, workspaceMemberships] of membershipsByWorkspace) {
+    const workspace = workspaceById.get(workspaceId);
+    if (!workspace) continue;
+    try {
+      const report = await buildCurrentWeekReport(workspace.id, workspace.base_currency_code, referenceDate);
+      const deliveryId = await claimReportDelivery(workspace, report, 'weekly_summary');
+      if (!deliveryId) {
+        skipped += 1;
+        continue;
+      }
+      let sent = false;
+      for (const membership of workspaceMemberships) {
+        const account = telegramAccountByUser.get(membership.user_id);
+        if (!account) continue;
+        try {
+          await sendTelegramWithRetry(() => bot.api.sendMessage(account.external_account_id, weeklyTelegramCaption(report), { parse_mode: 'HTML' }));
+          sent = true;
+        } catch (error) {
+          console.error('Telegram weekly report delivery failed', { workspaceId: workspace.id, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+      await markDelivery(deliveryId, sent ? 'sent' : 'failed');
+      if (sent) delivered += 1; else failed += 1;
+    } catch (error) {
+      failed += 1;
+      console.error('Weekly report generation failed', { workspaceId, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return { delivered, skipped, failed };
+}
+
 async function loadCurrentMonthReport(telegramUserId: string): Promise<CurrentMonthReportLookup> {
   const { data: account } = await supabase.from('channel_accounts').select('user_id').eq('channel', 'telegram').eq('external_account_id', telegramUserId).is('unlinked_at', null).single();
   if (!account) return { report: null, unavailableMessage: 'Zatiaľ nemáš žiadne uložené transakcie.' };
@@ -386,45 +533,12 @@ async function loadCurrentMonthReport(telegramUserId: string): Promise<CurrentMo
   return { report, unavailableMessage: null };
 }
 
-async function loadCurrentWeekReport(telegramUserId: string): Promise<CurrentMonthReportLookup> {
-  const { data: account } = await supabase.from('channel_accounts').select('user_id').eq('channel', 'telegram').eq('external_account_id', telegramUserId).is('unlinked_at', null).single();
-  if (!account) return { report: null, unavailableMessage: 'Zatiaľ nemáš žiadne uložené transakcie.' };
-  const { data: membership } = await supabase.from('workspace_members').select('workspace_id').eq('user_id', account.user_id).eq('status', 'active').limit(1).single();
-  if (!membership) return { report: null, unavailableMessage: 'Nenašiel som finančný priestor.' };
-  const { data: workspace } = await supabase.from('workspaces').select('base_currency_code').eq('id', membership.workspace_id).is('deleted_at', null).single();
-  if (!workspace) return { report: null, unavailableMessage: 'Nenašiel som finančný priestor.' };
-  const report = await buildCurrentWeekReport(membership.workspace_id, workspace.base_currency_code);
-  return { report, unavailableMessage: null };
-}
-
 export async function currentMonthSummary(telegramUserId: string): Promise<string> {
   const lookup = await loadCurrentMonthReport(telegramUserId);
   if (!lookup.report) return lookup.unavailableMessage;
   const report = lookup.report;
   const summary = reportNumbers(report);
   try { return `${summary}\n${await monthlyCommentary(summary)}`; } catch { return summary; }
-}
-
-/** Compact text-first report intended for an on-demand Telegram request. */
-export async function currentWeekSummary(telegramUserId: string): Promise<string> {
-  const lookup = await loadCurrentWeekReport(telegramUserId);
-  if (!lookup.report) return lookup.unavailableMessage;
-  const report = lookup.report;
-  const topCategories = report.categories.slice(0, 3).map((item) => {
-    const share = report.expenseMinor > 0 ? Math.round((item.amountMinor / report.expenseMinor) * 100) : 0;
-    return `• ${htmlEscape(item.name)}: ${htmlEscape(formatCurrency(item.amountMinor, report.currencyCode))} (${share} %)`;
-  });
-  const balance = formatCurrency(Math.abs(report.balanceMinor), report.currencyCode);
-  const balancePrefix = report.balanceMinor > 0 ? '+' : report.balanceMinor < 0 ? '-' : '';
-  return [
-    '📅 <b>Týždenný prehľad</b>',
-    `🟢 <b>Príjmy: +${htmlEscape(formatCurrency(report.incomeMinor, report.currencyCode))}</b>`,
-    `🔴 <b>Výdavky: -${htmlEscape(formatCurrency(report.expenseMinor, report.currencyCode))}</b>`,
-    `⚪ <b>Bilancia: ${balancePrefix}${htmlEscape(balance)}</b>`,
-    '',
-    '<b>Top kategórie:</b>',
-    ...(topCategories.length > 0 ? topCategories : ['• Zatiaľ žiadne výdavky']),
-  ].join('\n');
 }
 
 export type CurrentMonthVisualReport = { chartUrl: string | null; caption: string };
