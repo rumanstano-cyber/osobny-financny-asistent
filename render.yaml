@@ -35,7 +35,7 @@ services:
   - type: cron
     name: osobny-financny-asistent-weekly-report
     runtime: node
-    plan: free
+    plan: 0.5c-512mb
     buildCommand: corepack enable && pnpm install --frozen-lockfile
     startCommand: node apps/api/scripts/run-weekly-report-cron.mjs
     # Render schedules in UTC. The script itself calls the endpoint only at
