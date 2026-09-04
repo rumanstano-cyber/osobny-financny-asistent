@@ -32,6 +32,23 @@ services:
         sync: false
       - key: INTERNAL_CRON_SECRET
         generateValue: true
+  - type: cron
+    name: osobny-financny-asistent-weekly-report
+    runtime: node
+    plan: free
+    buildCommand: corepack enable && pnpm install --frozen-lockfile
+    startCommand: node apps/api/scripts/run-weekly-report-cron.mjs
+    # Render schedules in UTC. The script itself calls the endpoint only at
+    # Monday 08:00 Europe/Bratislava, including DST changes.
+    schedule: "0 * * * 1"
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 22.14.0
+      - key: BASE_URL
+        sync: false
+      - key: INTERNAL_CRON_SECRET
+        sync: false
   - type: web
     name: osobny-financny-asistent-web
     runtime: static
