@@ -32,7 +32,9 @@ export async function main() {
   const response = await fetch(`${baseUrl}/internal/reports/weekly/run`, {
     method: 'POST',
     headers: { 'x-internal-cron-secret': secret },
-    signal: AbortSignal.timeout(60_000),
+    // Allow a free Render web service enough time to wake before failing the
+    // scheduled invocation.
+    signal: AbortSignal.timeout(120_000),
   });
   if (!response.ok) throw new Error(`Weekly report endpoint failed with HTTP ${response.status}.`);
   console.info('Weekly report endpoint completed successfully.');
