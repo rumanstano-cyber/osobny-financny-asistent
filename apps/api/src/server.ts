@@ -1,7 +1,6 @@
 import Fastify from 'fastify';
 import { config } from './config.js';
-import { startMonthlyReportScheduler } from './monthly-report-scheduler.js';
-import { currentMonthSummary, sendMonthlyReports, sendWeeklyReports } from './reports.js';
+import { currentMonthSummary, previousClosedMonthReference, sendMonthlyReports, sendWeeklyReports } from './reports.js';
 import { createTelegramBot } from './telegram.js';
 import { previousClosedWeekReference, startWeeklyReportScheduler } from './weekly-report-scheduler.js';
 
@@ -29,7 +28,6 @@ async function ensureTelegramBotInitialized(): Promise<void> {
 
 function startSchedulerOnce(): void {
   if (reportSchedulersStarted) return;
-  startMonthlyReportScheduler(telegramBot);
   startWeeklyReportScheduler(telegramBot);
   reportSchedulersStarted = true;
 }
@@ -69,7 +67,8 @@ app.post<{ Params: { telegramUserId: string } }>('/internal/reports/monthly/:tel
 
 app.post('/internal/reports/monthly/run', async (request, reply) => {
   if (request.headers['x-internal-cron-secret'] !== config.INTERNAL_CRON_SECRET) return reply.code(401).send({ error: 'unauthorized' });
-  return sendMonthlyReports(telegramBot);
+  await ensureTelegramBotInitialized();
+  return sendMonthlyReports(telegramBot, previousClosedMonthReference());
 });
 
 app.post('/internal/reports/weekly/run', async (request, reply) => {

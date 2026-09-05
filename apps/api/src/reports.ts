@@ -14,6 +14,7 @@ type UserEmailRow = { id: string; email: string | null };
 type CurrentMonthReportLookup = { report: MonthlyReport; unavailableMessage: null } | { report: null; unavailableMessage: string };
 export type ReportPeriod = { start: Date; end: Date; label: string };
 type ReportDeliveryType = 'monthly_summary' | 'weekly_summary';
+type ReportDelivery = { id: string; dataSnapshot: Record<string, unknown> };
 
 export type CategorySpend = { name: string; slug: string; amountMinor: number };
 export type MonthlyReport = {
@@ -68,6 +69,13 @@ function currentMonthPeriod(referenceDate = new Date()): ReportPeriod {
   const end = zonedDateBoundary(nextYear, nextMonth);
   const monthLabel = new Intl.DateTimeFormat('sk-SK', { timeZone: reportTimeZone, month: 'long', year: 'numeric' }).format(start);
   return { start, end, label: monthLabel };
+}
+
+/** A local-noon reference date in the last day of the fully completed month. */
+export function previousClosedMonthReference(referenceDate = new Date()): Date {
+  const { year, month } = zonedDateParts(referenceDate);
+  // UTC noon keeps the intended Bratislava calendar date unambiguous around DST.
+  return new Date(Date.UTC(year, month - 1, 0, 12));
 }
 
 /** Calendar week from Monday 00:00 through the following Monday, in Bratislava time. */
@@ -266,7 +274,24 @@ async function sendReportEmail(report: MonthlyReport, commentary: string, chartU
   return true;
 }
 
-async function claimReportDelivery(workspace: WorkspaceRow, report: MonthlyReport, reportType: ReportDeliveryType): Promise<string | null> {
+function deliverySnapshot(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function deliveredChannels(snapshot: Record<string, unknown>): Record<string, true> {
+  const channels = snapshot.delivery_channels;
+  if (channels === null || typeof channels !== 'object' || Array.isArray(channels)) return {};
+  return Object.fromEntries(Object.entries(channels).filter(([, delivered]) => delivered === true)) as Record<string, true>;
+}
+
+async function claimReportDelivery(workspace: WorkspaceRow, report: MonthlyReport, reportType: ReportDeliveryType): Promise<ReportDelivery | null> {
+  const snapshot = {
+    incomeMinor: report.incomeMinor,
+    expenseMinor: report.expenseMinor,
+    balanceMinor: report.balanceMinor,
+    categories: report.categories,
+    delivery_channels: {},
+  };
   const { data, error } = await supabase
     .from('report_deliveries')
     .insert({
@@ -275,18 +300,17 @@ async function claimReportDelivery(workspace: WorkspaceRow, report: MonthlyRepor
       period_start: report.periodStart.toISOString(),
       period_end: report.periodEnd.toISOString(),
       base_currency_code: workspace.base_currency_code,
-      data_snapshot: { incomeMinor: report.incomeMinor, expenseMinor: report.expenseMinor, balanceMinor: report.balanceMinor, categories: report.categories },
+      data_snapshot: snapshot,
       status: 'queued',
     })
-    .select('id')
+    .select('id, data_snapshot')
     .single();
   if (error?.code === '23505') {
-    // A weekly report may be retried only after a confirmed Telegram failure.
+    // A scheduled report may be retried only after a confirmed delivery failure.
     // The conditional update makes a concurrent scheduler instance lose safely.
-    if (reportType !== 'weekly_summary') return null;
     const { data: existing, error: existingError } = await supabase
       .from('report_deliveries')
-      .select('id, status')
+      .select('id, status, data_snapshot')
       .eq('workspace_id', workspace.id)
       .eq('report_type', reportType)
       .eq('period_start', report.periodStart.toISOString())
@@ -298,13 +322,28 @@ async function claimReportDelivery(workspace: WorkspaceRow, report: MonthlyRepor
       .update({ status: 'queued', generated_at: null })
       .eq('id', existing.id)
       .eq('status', 'failed')
-      .select('id')
+      .select('id, data_snapshot')
       .maybeSingle();
     if (reclaimError) throw new Error(reclaimError.message);
-    return reclaimed?.id ?? null;
+    return reclaimed ? { id: reclaimed.id as string, dataSnapshot: deliverySnapshot(reclaimed.data_snapshot) } : null;
   }
   if (error || !data) throw new Error(error?.message ?? 'Unable to create report delivery');
-  return data.id as string;
+  return { id: data.id as string, dataSnapshot: deliverySnapshot(data.data_snapshot) };
+}
+
+async function markChannelDelivered(delivery: ReportDelivery, channel: string): Promise<ReportDelivery> {
+  const nextSnapshot = {
+    ...delivery.dataSnapshot,
+    delivery_channels: { ...deliveredChannels(delivery.dataSnapshot), [channel]: true },
+  };
+  const { data, error } = await supabase
+    .from('report_deliveries')
+    .update({ data_snapshot: nextSnapshot })
+    .eq('id', delivery.id)
+    .select('id, data_snapshot')
+    .single();
+  if (error || !data) throw new Error(error?.message ?? 'Unable to persist report delivery channel state');
+  return { id: data.id as string, dataSnapshot: deliverySnapshot(data.data_snapshot) };
 }
 
 function wait(milliseconds: number): Promise<void> {
@@ -390,8 +429,8 @@ export async function sendMonthlyReports(bot: Bot, referenceDate = new Date()): 
     if (!workspace) continue;
     try {
       const report = await buildMonthlyReport(workspace.id, workspace.base_currency_code, referenceDate);
-      const deliveryId = await claimReportDelivery(workspace, report, 'monthly_summary');
-      if (!deliveryId) {
+      let delivery = await claimReportDelivery(workspace, report, 'monthly_summary');
+      if (!delivery) {
         skipped += 1;
         continue;
       }
@@ -401,29 +440,46 @@ export async function sendMonthlyReports(bot: Bot, referenceDate = new Date()): 
       let commentary: string;
       try { commentary = await monthlyReportCommentary(numbers); } catch { commentary = 'Prehľad je pripravený. Sleduj najväčšie kategórie výdavkov v ďalšom mesiaci.'; }
       const chartUrl = quickChartUrl(report);
-      let sent = false;
+      // A successful channel is persisted independently. On a later retry it
+      // must remain successful even when there is nothing left to send.
+      const hasEligibleChannel = workspaceMemberships.some((membership) =>
+        telegramAccountByUser.has(membership.user_id)
+        || (emailDeliveryEnabled && emailByUserId.has(membership.user_id)),
+      );
+      let hadDeliveryFailure = false;
       for (const membership of workspaceMemberships) {
         const account = telegramAccountByUser.get(membership.user_id);
-        if (account) {
+        const telegramChannel = `telegram:${membership.user_id}`;
+        if (account && !deliveredChannels(delivery.dataSnapshot)[telegramChannel]) {
           try {
-            await bot.api.sendPhoto(account.external_account_id, chartUrl, { caption: telegramCaption(report, commentary), parse_mode: 'HTML' });
-            sent = true;
+            await sendTelegramWithRetry(() => bot.api.sendPhoto(account.external_account_id, chartUrl, { caption: telegramCaption(report, commentary), parse_mode: 'HTML' }));
+            delivery = await markChannelDelivered(delivery, telegramChannel);
           } catch (error) {
+            hadDeliveryFailure = true;
             console.error('Telegram monthly report delivery failed', { workspaceId: workspace.id, error: error instanceof Error ? error.message : String(error) });
           }
         }
 
         const email = emailByUserId.get(membership.user_id);
-        if (email && emailDeliveryEnabled) {
+        const emailChannel = `email:${membership.user_id}`;
+        if (email && emailDeliveryEnabled && !deliveredChannels(delivery.dataSnapshot)[emailChannel]) {
           try {
-            sent = (await sendReportEmail(report, commentary, chartUrl, email)) || sent;
+            if (await sendReportEmail(report, commentary, chartUrl, email)) {
+              delivery = await markChannelDelivered(delivery, emailChannel);
+            } else {
+              hadDeliveryFailure = true;
+            }
           } catch (error) {
+            hadDeliveryFailure = true;
             console.error('Monthly e-mail report delivery failed', { workspaceId: workspace.id, error: error instanceof Error ? error.message : String(error) });
           }
         }
       }
-      await markDelivery(deliveryId, sent ? 'sent' : 'failed');
-      if (sent) delivered += 1; else failed += 1;
+      const pendingTelegram = workspaceMemberships.some((membership) => telegramAccountByUser.has(membership.user_id) && !deliveredChannels(delivery.dataSnapshot)[`telegram:${membership.user_id}`]);
+      const pendingEmail = emailDeliveryEnabled && workspaceMemberships.some((membership) => emailByUserId.has(membership.user_id) && !deliveredChannels(delivery.dataSnapshot)[`email:${membership.user_id}`]);
+      const completed = hasEligibleChannel && !hadDeliveryFailure && !pendingTelegram && !pendingEmail;
+      await markDelivery(delivery.id, completed ? 'sent' : 'failed');
+      if (completed) delivered += 1; else failed += 1;
     } catch (error) {
       failed += 1;
       console.error('Monthly report generation failed', { workspaceId, error: error instanceof Error ? error.message : String(error) });
@@ -496,8 +552,8 @@ export async function sendWeeklyReports(bot: Bot, referenceDate = new Date()): P
     if (!workspace) continue;
     try {
       const report = await buildCurrentWeekReport(workspace.id, workspace.base_currency_code, referenceDate);
-      const deliveryId = await claimReportDelivery(workspace, report, 'weekly_summary');
-      if (!deliveryId) {
+      const delivery = await claimReportDelivery(workspace, report, 'weekly_summary');
+      if (!delivery) {
         skipped += 1;
         continue;
       }
@@ -512,7 +568,7 @@ export async function sendWeeklyReports(bot: Bot, referenceDate = new Date()): P
           console.error('Telegram weekly report delivery failed', { workspaceId: workspace.id, error: error instanceof Error ? error.message : String(error) });
         }
       }
-      await markDelivery(deliveryId, sent ? 'sent' : 'failed');
+      await markDelivery(delivery.id, sent ? 'sent' : 'failed');
       if (sent) delivered += 1; else failed += 1;
     } catch (error) {
       failed += 1;

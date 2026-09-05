@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { sendTelegramWithRetry, summarizeReportTransactions, weeklyReportPeriod } from './reports.js';
+import { previousClosedMonthReference, sendTelegramWithRetry, summarizeReportTransactions, weeklyReportPeriod } from './reports.js';
 import { previousClosedWeekReference, shouldCatchUpWeeklyReport } from './weekly-report-scheduler.js';
 
 test('weekly report period uses the closed Monday-to-Monday Bratislava week across the spring DST change', () => {
@@ -28,6 +28,16 @@ test('closed-week reference always selects the fully completed Bratislava week',
 
   assert.equal(period.start.toISOString(), '2026-03-22T23:00:00.000Z');
   assert.equal(period.end.toISOString(), '2026-03-29T22:00:00.000Z');
+});
+
+test('closed-month reference always selects the preceding completed Bratislava month', () => {
+  const reference = previousClosedMonthReference(new Date('2026-04-01T06:00:00.000Z'));
+  assert.equal(reference.toISOString(), '2026-03-31T12:00:00.000Z');
+});
+
+test('closed-month reference remains unambiguous across the autumn DST boundary', () => {
+  const reference = previousClosedMonthReference(new Date('2026-11-01T07:00:00.000Z'));
+  assert.equal(reference.toISOString(), '2026-10-31T12:00:00.000Z');
 });
 
 test('report aggregation calculates income, expenses, balance and ranked expense categories', () => {
