@@ -71,6 +71,14 @@ app.post('/internal/reports/monthly/run', async (request, reply) => {
   return sendMonthlyReports(telegramBot, previousClosedMonthReference());
 });
 
+// A deliberately scoped, secret-protected operational route. It is useful for
+// support-triggered deliveries without exposing reports from other workspaces.
+app.post<{ Params: { workspaceId: string } }>('/internal/reports/monthly/run/:workspaceId', async (request, reply) => {
+  if (request.headers['x-internal-cron-secret'] !== config.INTERNAL_CRON_SECRET) return reply.code(401).send({ error: 'unauthorized' });
+  await ensureTelegramBotInitialized();
+  return sendMonthlyReports(telegramBot, previousClosedMonthReference(), request.params.workspaceId);
+});
+
 app.post('/internal/reports/weekly/run', async (request, reply) => {
   if (request.headers['x-internal-cron-secret'] !== config.INTERNAL_CRON_SECRET) return reply.code(401).send({ error: 'unauthorized' });
   await ensureTelegramBotInitialized();

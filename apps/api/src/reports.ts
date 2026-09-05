@@ -376,7 +376,17 @@ async function markDelivery(deliveryId: string, status: 'generated' | 'sent' | '
   if (error) console.error('Unable to update report delivery', { deliveryId, error: error.message });
 }
 
-export async function sendMonthlyReports(bot: Bot, referenceDate = new Date()): Promise<{ delivered: number; skipped: number; failed: number }> {
+/**
+ * Send a monthly report for every active workspace, or for exactly one
+ * workspace when `workspaceId` is provided. The scoped mode is used only by
+ * the protected operational endpoint, so a manual delivery cannot reach
+ * unrelated customers.
+ */
+export async function sendMonthlyReports(
+  bot: Bot,
+  referenceDate = new Date(),
+  workspaceId?: string,
+): Promise<{ delivered: number; skipped: number; failed: number }> {
   const { data: accounts, error: accountError } = await supabase
     .from('channel_accounts')
     .select('user_id, external_account_id')
@@ -387,10 +397,12 @@ export async function sendMonthlyReports(bot: Bot, referenceDate = new Date()): 
   const telegramAccounts = (accounts ?? []) as TelegramAccountRow[];
   const telegramAccountByUser = new Map(telegramAccounts.map((account) => [account.user_id, account]));
 
-  const { data: memberships, error: membershipError } = await supabase
+  let membershipQuery = supabase
     .from('workspace_members')
     .select('workspace_id, user_id, role')
     .eq('status', 'active');
+  if (workspaceId) membershipQuery = membershipQuery.eq('workspace_id', workspaceId);
+  const { data: memberships, error: membershipError } = await membershipQuery;
   if (membershipError) throw new Error(membershipError.message);
   const activeMemberships = (memberships ?? []) as MembershipRow[];
   if (activeMemberships.length === 0) return { delivered: 0, skipped: 0, failed: 0 };
