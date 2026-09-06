@@ -568,7 +568,16 @@ export function createTelegramBot(): Bot {
       }
 
       if (isCategoryCorrectionRequest(text)) {
-        await handleCategoryCorrection(ctx, text);
+        try {
+          await handleCategoryCorrection(ctx, text);
+        } catch (error) {
+          console.error('Telegram category correction request failed', {
+            updateId: ctx.update.update_id,
+            telegramUserId: ctx.from.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          await ctx.reply('❌ Opravu kategórie sa nepodarilo pripraviť. Skús to prosím o chvíľu znova.');
+        }
         return;
       }
 

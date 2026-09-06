@@ -18,6 +18,8 @@ const categories: ActiveCategory[] = [
 
 test('opens the category picker for an ambiguous correction request', () => {
   assert.equal(isCategoryCorrectionRequest('Oprav kategóriu'), true);
+  assert.equal(isCategoryCorrectionRequest('Zmeň kategóriu'), true);
+  assert.equal(isCategoryCorrectionRequest('Zmen kategoriu'), true);
   assert.deepEqual(categoryCorrectionDecision('Oprav kategóriu', true, categories), {
     kind: 'show_picker', reason: 'unresolved',
   });
