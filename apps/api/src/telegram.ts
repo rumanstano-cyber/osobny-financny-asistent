@@ -44,6 +44,12 @@ type CategoryCorrectionResult = {
   note: string | null;
   was_changed: boolean;
 };
+type CategoryCorrectionCategoryRpc = {
+  category_id: string;
+  name: string;
+  slug: string;
+  icon: string | null;
+};
 type ReceiptClaimMatch = {
   receipt_id: string;
   merchant_name: string | null;
@@ -168,7 +174,18 @@ async function getCategoryCorrectionCategories(telegramUserId: string, transacti
     p_transaction_id: transactionId,
   });
   if (error) throw new Error(error.message);
-  return (data as ActiveCategory[] | null) ?? [];
+  return ((data as CategoryCorrectionCategoryRpc[] | null) ?? []).flatMap((category) => {
+    if (!category.category_id || !category.name || !category.slug) {
+      console.warn('Ignoring invalid category correction row from Supabase RPC');
+      return [];
+    }
+    return [{
+      id: category.category_id,
+      name: category.name,
+      slug: category.slug,
+      icon: category.icon,
+    }];
+  });
 }
 
 async function correctLastTransactionCategory(
