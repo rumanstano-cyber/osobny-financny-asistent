@@ -5,13 +5,6 @@ export type ActiveCategory = {
   icon: string | null;
 };
 
-export type CategoryPickerContext = {
-  token: string;
-  telegramUserId: string;
-  transactionId: string;
-  expiresAt: number;
-};
-
 export type NaturalCategoryResolution =
   | { category: ActiveCategory; confidence: 'exact' }
   | { category: null; confidence: 'ambiguous' | 'none' };
@@ -92,11 +85,35 @@ export function categoryButtonRows(categories: ActiveCategory[]): ActiveCategory
   }, []);
 }
 
-export function categoryCallbackData(token: string, categoryId: string): string {
-  return `txc:${token}:${categoryId}`;
+function uuidToBase64Url(value: string): string | null {
+  const hex = value.replace(/-/g, '');
+  if (!/^[a-f0-9]{32}$/i.test(hex)) return null;
+  return Buffer.from(hex, 'hex').toString('base64url');
 }
 
-export function parseCategoryCallbackData(value: string): { token: string; categoryId: string } | null {
-  const match = /^txc:([a-f0-9]{12}):([0-9a-f-]{36})$/i.exec(value);
-  return match ? { token: match[1], categoryId: match[2] } : null;
+function base64UrlToUuid(value: string): string | null {
+  if (!/^[A-Za-z0-9_-]{22}$/.test(value)) return null;
+  const hex = Buffer.from(value, 'base64url').toString('hex');
+  if (!/^[a-f0-9]{32}$/i.test(hex)) return null;
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/**
+ * Telegram limits callback data to 64 bytes. UUIDs encoded as base64url fit
+ * comfortably and keep the picker valid across a Render restart. The database
+ * RPC still verifies the Telegram user and that this is their latest record.
+ */
+export function categoryCallbackData(transactionId: string, categoryId: string): string {
+  const transaction = uuidToBase64Url(transactionId);
+  const category = uuidToBase64Url(categoryId);
+  if (!transaction || !category) throw new Error('Invalid UUID for category callback');
+  return `txc:${transaction}:${category}`;
+}
+
+export function parseCategoryCallbackData(value: string): { transactionId: string; categoryId: string } | null {
+  const match = /^txc:([A-Za-z0-9_-]{22}):([A-Za-z0-9_-]{22})$/.exec(value);
+  if (!match) return null;
+  const transactionId = base64UrlToUuid(match[1]);
+  const categoryId = base64UrlToUuid(match[2]);
+  return transactionId && categoryId ? { transactionId, categoryId } : null;
 }

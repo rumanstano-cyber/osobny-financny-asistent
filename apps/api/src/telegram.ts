@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { Bot, InlineKeyboard, type Context } from 'grammy';
 import { describeReceiptOcrFailure, extractReceipt, resolveCategoryCorrectionWithAi, transcribeVoice, type ReceiptExtraction } from './ai.js';
 import {
@@ -8,7 +8,6 @@ import {
   isCategoryCorrectionRequest,
   parseCategoryCallbackData,
   type ActiveCategory,
-  type CategoryPickerContext,
 } from './category-correction.js';
 import { categorizeExpense, type CategorizationInput } from './category-categorizer.js';
 import { config } from './config.js';
@@ -58,8 +57,6 @@ type ReceiptClaimMatch = {
 };
 const processedUpdateIds = new Set<number>();
 const maxTrackedUpdates = 10_000;
-const categoryPickerContexts = new Map<string, CategoryPickerContext>();
-const categoryPickerTtlMs = 15 * 60_000;
 
 function name(ctx: Context) { return [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ') || ctx.from?.username || 'Používateľ'; }
 
@@ -188,28 +185,12 @@ async function correctLastTransactionCategory(
   return (data as CategoryCorrectionResult[] | null)?.[0] ?? null;
 }
 
-function createCategoryPickerContext(telegramUserId: string, transactionId: string): CategoryPickerContext {
-  const now = Date.now();
-  for (const [token, context] of categoryPickerContexts) {
-    if (context.expiresAt <= now) categoryPickerContexts.delete(token);
-  }
-  const context = {
-    token: randomBytes(6).toString('hex'),
-    telegramUserId,
-    transactionId,
-    expiresAt: now + categoryPickerTtlMs,
-  };
-  categoryPickerContexts.set(context.token, context);
-  return context;
-}
-
 async function showCategoryPicker(ctx: Context, last: LastTransaction, categories: ActiveCategory[]): Promise<void> {
   if (!ctx.from) return;
-  const context = createCategoryPickerContext(String(ctx.from.id), last.transaction_id);
   const keyboard = new InlineKeyboard();
   for (const row of categoryButtonRows(categories)) {
     for (const category of row) {
-      keyboard.text(category.name.slice(0, 48), categoryCallbackData(context.token, category.id));
+      keyboard.text(category.name.slice(0, 48), categoryCallbackData(last.transaction_id, category.id));
     }
     keyboard.row();
   }
@@ -506,21 +487,26 @@ export function createTelegramBot(): Bot {
     await ctx.answerCallbackQuery({ text: 'Zápis ostáva bez zmeny.' });
     try { await ctx.editMessageReplyMarkup({ reply_markup: undefined }); } catch { /* the original message may no longer be editable */ }
   });
-  bot.callbackQuery(/^txc:([a-f0-9]{12}):([0-9a-f-]{36})$/i, async (ctx) => {
-    if (!claimUpdate(ctx.update.update_id)) return;
+  bot.callbackQuery(/^txc:([A-Za-z0-9_-]{22}):([A-Za-z0-9_-]{22})$/, async (ctx) => {
+    if (!claimUpdate(ctx.update.update_id)) {
+      await ctx.answerCallbackQuery({ text: 'Toto kliknutie už bolo spracované.' });
+      return;
+    }
     try {
       await ctx.answerCallbackQuery();
-      if (ctx.chat?.type !== 'private' || !ctx.from) return;
+      if (!ctx.from) return;
       const callback = parseCategoryCallbackData(ctx.callbackQuery.data);
-      if (!callback) return;
-      const context = categoryPickerContexts.get(callback.token);
-      if (!context || context.expiresAt <= Date.now() || context.telegramUserId !== String(ctx.from.id)) {
-        categoryPickerContexts.delete(callback.token);
-        await ctx.reply('Výber kategórie už vypršal. Napíš, prosím, „oprav kategóriu“ znova.');
+      if (!callback) {
+        await ctx.reply('Tento výber kategórie už nie je platný. Napíš, prosím, „oprav kategóriu“ znova.');
         return;
       }
-      const corrected = await correctLastTransactionCategory(String(ctx.from.id), context.transactionId, callback.categoryId);
-      categoryPickerContexts.delete(callback.token);
+      console.info('Telegram category correction selected', {
+        updateId: ctx.update.update_id,
+        telegramUserId: ctx.from.id,
+        transactionId: callback.transactionId,
+        categoryId: callback.categoryId,
+      });
+      const corrected = await correctLastTransactionCategory(String(ctx.from.id), callback.transactionId, callback.categoryId);
       if (!corrected) {
         await ctx.reply('Posledný zápis sa medzitým zmenil. Napíš, prosím, opravu kategórie ešte raz.');
         return;

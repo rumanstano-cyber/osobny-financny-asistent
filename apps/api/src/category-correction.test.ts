@@ -51,7 +51,9 @@ test('reports that no correction is possible without a last transaction', () => 
 });
 
 test('category callback data retains the picker token and selected category only', () => {
-  const callback = categoryCallbackData('a1b2c3d4e5f6', categories[1].id);
-  assert.deepEqual(parseCategoryCallbackData(callback), { token: 'a1b2c3d4e5f6', categoryId: categories[1].id });
+  const transactionId = '00000000-0000-4000-8000-000000000099';
+  const callback = categoryCallbackData(transactionId, categories[1].id);
+  assert.ok(callback.length <= 64);
+  assert.deepEqual(parseCategoryCallbackData(callback), { transactionId, categoryId: categories[1].id });
   assert.equal(parseCategoryCallbackData('txc:invalid'), null);
 });
