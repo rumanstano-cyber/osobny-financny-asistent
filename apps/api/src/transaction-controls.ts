@@ -17,7 +17,7 @@ function normalize(value: string): string {
  */
 export function isCancelLastTransactionRequest(text: string): boolean {
   const value = normalize(text);
-  return /^(?:prosim\s+)?(?:zrus|odstran|vymaz|zmaz|odvolaj)\s+(?:(?:mi|to)\s+)?(?:(?:posledn\p{L}*|naposledy)\s+)?(?:zapis(?:u|om|e)?|transakciu|transakcia|transakcii)$/u.test(value);
+  return /^(?:prosim\s+)?(?:zrus|zrusit|odstran|odstranit|vymaz|vymazat|zmaz|zmazat|odvolaj)\s+(?:(?:mi|to)\s+)?(?:(?:posledn\p{L}*|naposledy)\s+)?(?:zapis(?:u|om|e)?|transakciu|transakcia|transakcii)(?:\s+prosim)?$/u.test(value);
 }
 
 export function cancelLastTransactionDecision(hasLastTransaction: boolean): CancelLastTransactionDecision {

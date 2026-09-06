@@ -147,6 +147,19 @@ async function voidTransaction(telegramUserId: string, transactionId: string): P
   return (data as LastTransaction[] | null)?.[0] ?? null;
 }
 
+async function requestLastTransactionVoid(ctx: Context): Promise<void> {
+  if (!ctx.from) return;
+  const last = await getLastTransaction(String(ctx.from.id));
+  if (!last) {
+    await ctx.reply('Zatiaľ nemáš žiadny potvrdený zápis na zrušenie.');
+    return;
+  }
+  const keyboard = new InlineKeyboard()
+    .text('Áno, zrušiť', `txn:void:${last.transaction_id}`)
+    .text('Ponechať', 'txn:keep');
+  await ctx.reply(`⚠️ Naozaj chceš zrušiť posledný zápis?\n${lastTransactionLabel(last)}`, { reply_markup: keyboard });
+}
+
 async function correctLastTransaction(telegramUserId: string, text: string, categorizationInput: CategorizationInput = {}): Promise<CorrectedTransaction | null> {
   const parsed = parseFinancialMessage(text);
   if (!parsed) return null;
@@ -563,6 +576,10 @@ export function createTelegramBot(): Bot {
         await ctx.reply('🎙️ Prepisujem správu…');
         const audio = await downloadTelegramFile(audioMessage.file_id);
         const text = await transcribeVoice(audio.bytes, audio.path);
+        if (isCancelLastTransactionRequest(text)) {
+          await requestLastTransactionVoid(ctx);
+          return;
+        }
         const saved = await saveTransaction(ctx, text);
         await ctx.reply(saved ? `✅ Zapísané: ${saved.label} – ${formatAmount(saved.amount, saved.currency)}` : `Nerozumel som: „${text}“`);
         return;
@@ -607,15 +624,7 @@ export function createTelegramBot(): Bot {
       }
 
       if (isCancelLastTransactionRequest(text)) {
-        const last = await getLastTransaction(String(ctx.from.id));
-        if (!last) {
-          await ctx.reply('Zatiaľ nemáš žiadny potvrdený zápis na zrušenie.');
-          return;
-        }
-        const keyboard = new InlineKeyboard()
-          .text('Áno, zrušiť', `txn:void:${last.transaction_id}`)
-          .text('Ponechať', 'txn:keep');
-        await ctx.reply(`⚠️ Naozaj chceš zrušiť posledný zápis?\n${lastTransactionLabel(last)}`, { reply_markup: keyboard });
+        await requestLastTransactionVoid(ctx);
         return;
       }
 

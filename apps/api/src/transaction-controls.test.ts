@@ -14,6 +14,10 @@ test('recognizes the requested Slovak forms for cancelling the last transaction'
     'Zruš zápis',
     'Vymaž zápis',
     'Odstráň zápis',
+    'Zrušiť posledný zápis',
+    'Vymazať poslednú transakciu',
+    'Prosím, zruš mi posledný zápis',
+    'Zruš posledný zápis, prosím.',
   ]) assert.equal(isCancelLastTransactionRequest(text), true, text);
 });
 
