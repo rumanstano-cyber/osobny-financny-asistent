@@ -1,6 +1,15 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { Bot, InlineKeyboard, type Context } from 'grammy';
-import { describeReceiptOcrFailure, extractReceipt, transcribeVoice, type ReceiptExtraction } from './ai.js';
+import { describeReceiptOcrFailure, extractReceipt, resolveCategoryCorrectionWithAi, transcribeVoice, type ReceiptExtraction } from './ai.js';
+import {
+  categoryButtonRows,
+  categoryCallbackData,
+  categoryCorrectionDecision,
+  isCategoryCorrectionRequest,
+  parseCategoryCallbackData,
+  type ActiveCategory,
+  type CategoryPickerContext,
+} from './category-correction.js';
 import { categorizeExpense, type CategorizationInput } from './category-categorizer.js';
 import { config } from './config.js';
 import { readEkasaReceiptQr } from './ekasa-qr.js';
@@ -27,6 +36,15 @@ type CorrectedTransaction = {
   category_name: string | null;
   note: string | null;
 };
+type CategoryCorrectionResult = {
+  transaction_id: string;
+  amount_minor: number;
+  currency_code: string;
+  category_name: string;
+  previous_category_name: string | null;
+  note: string | null;
+  was_changed: boolean;
+};
 type ReceiptClaimMatch = {
   receipt_id: string;
   merchant_name: string | null;
@@ -40,6 +58,8 @@ type ReceiptClaimMatch = {
 };
 const processedUpdateIds = new Set<number>();
 const maxTrackedUpdates = 10_000;
+const categoryPickerContexts = new Map<string, CategoryPickerContext>();
+const categoryPickerTtlMs = 15 * 60_000;
 
 function name(ctx: Context) { return [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ') || ctx.from?.username || 'Používateľ'; }
 
@@ -143,6 +163,100 @@ async function correctLastTransaction(telegramUserId: string, text: string, cate
   });
   if (error) throw new Error(error.message);
   return (data as CorrectedTransaction[] | null)?.[0] ?? null;
+}
+
+async function getCategoryCorrectionCategories(telegramUserId: string, transactionId: string): Promise<ActiveCategory[]> {
+  const { data, error } = await supabase.rpc('get_telegram_category_correction_categories', {
+    p_telegram_user_id: telegramUserId,
+    p_transaction_id: transactionId,
+  });
+  if (error) throw new Error(error.message);
+  return (data as ActiveCategory[] | null) ?? [];
+}
+
+async function correctLastTransactionCategory(
+  telegramUserId: string,
+  transactionId: string,
+  categoryId: string,
+): Promise<CategoryCorrectionResult | null> {
+  const { data, error } = await supabase.rpc('correct_last_telegram_transaction_category', {
+    p_telegram_user_id: telegramUserId,
+    p_expected_transaction_id: transactionId,
+    p_category_id: categoryId,
+  });
+  if (error) throw new Error(error.message);
+  return (data as CategoryCorrectionResult[] | null)?.[0] ?? null;
+}
+
+function createCategoryPickerContext(telegramUserId: string, transactionId: string): CategoryPickerContext {
+  const now = Date.now();
+  for (const [token, context] of categoryPickerContexts) {
+    if (context.expiresAt <= now) categoryPickerContexts.delete(token);
+  }
+  const context = {
+    token: randomBytes(6).toString('hex'),
+    telegramUserId,
+    transactionId,
+    expiresAt: now + categoryPickerTtlMs,
+  };
+  categoryPickerContexts.set(context.token, context);
+  return context;
+}
+
+async function showCategoryPicker(ctx: Context, last: LastTransaction, categories: ActiveCategory[]): Promise<void> {
+  if (!ctx.from) return;
+  const context = createCategoryPickerContext(String(ctx.from.id), last.transaction_id);
+  const keyboard = new InlineKeyboard();
+  for (const row of categoryButtonRows(categories)) {
+    for (const category of row) {
+      keyboard.text(category.name.slice(0, 48), categoryCallbackData(context.token, category.id));
+    }
+    keyboard.row();
+  }
+  await ctx.reply('Kam mám zaradiť poslednú transakciu?\nVyber kategóriu 👇', { reply_markup: keyboard });
+}
+
+function categoryCorrectionConfirmation(result: CategoryCorrectionResult): string {
+  const label = `${result.note?.trim() || 'Posledný zápis'} ${formatAmount(result.amount_minor, transactionCurrency(result.currency_code))}`;
+  if (!result.was_changed) return `ℹ️ ${label} už je zaradený v kategórii ${result.category_name}.`;
+  return `✅ Opravené.\n${label} → ${result.category_name}`;
+}
+
+async function handleCategoryCorrection(ctx: Context, text: string): Promise<void> {
+  if (!ctx.from) return;
+  const telegramUserId = String(ctx.from.id);
+  const last = await getLastTransaction(telegramUserId);
+  if (!last) {
+    await ctx.reply('Zatiaľ nemáš žiadny potvrdený zápis na opravu kategórie.');
+    return;
+  }
+  const categories = await getCategoryCorrectionCategories(telegramUserId, last.transaction_id);
+  if (categories.length === 0) {
+    await ctx.reply('Pre tento zápis teraz nie je dostupná žiadna aktívna kategória.');
+    return;
+  }
+
+  const decision = categoryCorrectionDecision(text, true, categories);
+  let category = decision.kind === 'apply_category' ? decision.category : null;
+  const hasExplicitDestination = /\b(do|na|pod)\b/iu.test(text) && !/\bnie\s+(je|sú)\b/iu.test(text);
+  if (!category && decision.kind === 'show_picker' && decision.reason === 'unresolved' && hasExplicitDestination) {
+    const aiCategory = await resolveCategoryCorrectionWithAi(text, categories);
+    if (aiCategory && aiCategory.confidence >= 0.9) {
+      category = categories.find((candidate) => candidate.id === aiCategory.categoryId) ?? null;
+    }
+  }
+
+  if (!category) {
+    await showCategoryPicker(ctx, last, categories);
+    return;
+  }
+
+  const corrected = await correctLastTransactionCategory(telegramUserId, last.transaction_id, category.id);
+  if (!corrected) {
+    await ctx.reply('Posledný zápis sa medzitým zmenil. Napíš, prosím, opravu kategórie ešte raz.');
+    return;
+  }
+  await ctx.reply(categoryCorrectionConfirmation(corrected));
 }
 
 async function sendReceiptForClaim(ctx: Context, receipt: ReceiptClaimMatch): Promise<void> {
@@ -392,6 +506,36 @@ export function createTelegramBot(): Bot {
     await ctx.answerCallbackQuery({ text: 'Zápis ostáva bez zmeny.' });
     try { await ctx.editMessageReplyMarkup({ reply_markup: undefined }); } catch { /* the original message may no longer be editable */ }
   });
+  bot.callbackQuery(/^txc:([a-f0-9]{12}):([0-9a-f-]{36})$/i, async (ctx) => {
+    if (!claimUpdate(ctx.update.update_id)) return;
+    try {
+      await ctx.answerCallbackQuery();
+      if (ctx.chat?.type !== 'private' || !ctx.from) return;
+      const callback = parseCategoryCallbackData(ctx.callbackQuery.data);
+      if (!callback) return;
+      const context = categoryPickerContexts.get(callback.token);
+      if (!context || context.expiresAt <= Date.now() || context.telegramUserId !== String(ctx.from.id)) {
+        categoryPickerContexts.delete(callback.token);
+        await ctx.reply('Výber kategórie už vypršal. Napíš, prosím, „oprav kategóriu“ znova.');
+        return;
+      }
+      const corrected = await correctLastTransactionCategory(String(ctx.from.id), context.transactionId, callback.categoryId);
+      categoryPickerContexts.delete(callback.token);
+      if (!corrected) {
+        await ctx.reply('Posledný zápis sa medzitým zmenil. Napíš, prosím, opravu kategórie ešte raz.');
+        return;
+      }
+      try { await ctx.editMessageReplyMarkup({ reply_markup: undefined }); } catch { /* the original message may no longer be editable */ }
+      await ctx.reply(categoryCorrectionConfirmation(corrected));
+    } catch (error) {
+      console.error('Telegram category correction selection failed', {
+        updateId: ctx.update.update_id,
+        telegramUserId: ctx.from?.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      try { await ctx.reply('❌ Kategóriu sa nepodarilo zmeniť. Skús to prosím o chvíľu znova.'); } catch { /* update is already acknowledged */ }
+    }
+  });
   bot.on('message', async (ctx) => {
     if (ctx.chat?.type !== 'private') return;
     if (!claimUpdate(ctx.update.update_id)) {
@@ -420,6 +564,11 @@ export function createTelegramBot(): Bot {
       const text = ctx.message.text;
       if (!text) {
         await ctx.reply('Podporujem textové správy, hlasové správy a fotky bločkov.');
+        return;
+      }
+
+      if (isCategoryCorrectionRequest(text)) {
+        await handleCategoryCorrection(ctx, text);
         return;
       }
 

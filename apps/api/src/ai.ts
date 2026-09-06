@@ -94,6 +94,7 @@ export type ReceiptExtraction = {
   ocrText: string;
 };
 export type ExpenseCategoryAiResult = { categorySlug: string; confidence: number; reason: string };
+export type CategoryCorrectionAiResult = { categoryId: string; confidence: number };
 
 const expenseCategorizationPrompt = `Si klasifikátor výdavkov pre slovenského osobného finančného asistenta. Vráť výhradne JSON vo formáte {"categorySlug":"...","confidence":0 až 1,"reason":"stručné vysvetlenie"}. Môžeš vrátiť iba jednu z kategórií: auto, byvanie, domacnost, potraviny, restauracie, poistenie, zdravie, drogeria, oblecenie, elektronika, deti, dovolenka, zabava, ostatne.
 
@@ -137,6 +138,41 @@ export async function classifyExpenseWithAi(context: string): Promise<ExpenseCat
       : null;
   } catch (error) {
     console.warn('AI expense categorization failed', { error: error instanceof Error ? error.message : String(error) });
+    return null;
+  }
+}
+
+/**
+ * Resolves a user's natural-language correction only against categories loaded
+ * from the database. It can therefore understand e.g. "doprava" -> "Auto"
+ * without freezing category names in application code.
+ */
+export async function resolveCategoryCorrectionWithAi(
+  text: string,
+  categories: Array<{ id: string; name: string }>,
+): Promise<CategoryCorrectionAiResult | null> {
+  if (!client || categories.length === 0) return null;
+  try {
+    const allowed = categories.map((category) => ({ id: category.id, name: category.name }));
+    const result = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content: 'Vyber iba kategóriu, ktorú používateľ výslovne zamýšľa ako novú kategóriu poslednej finančnej transakcie. Vráť výhradne JSON {"categoryId":"UUID alebo prázdny reťazec","confidence":0 až 1}. Ak text neuvádza nový cieľ alebo si nie si istý, vráť prázdne categoryId a confidence pod 0.9.',
+        },
+        { role: 'user', content: `Text používateľa: ${text.slice(0, 500)}\nAktívne kategórie: ${JSON.stringify(allowed)}` },
+      ],
+    });
+    const parsed = JSON.parse(result.choices[0]?.message.content ?? '{}') as Partial<CategoryCorrectionAiResult>;
+    return typeof parsed.categoryId === 'string'
+      && typeof parsed.confidence === 'number'
+      && allowed.some((category) => category.id === parsed.categoryId)
+      ? { categoryId: parsed.categoryId, confidence: parsed.confidence }
+      : null;
+  } catch (error) {
+    console.warn('AI category correction resolution failed', { error: error instanceof Error ? error.message : String(error) });
     return null;
   }
 }
