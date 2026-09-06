@@ -17,6 +17,7 @@ import { optimizeReceiptImage } from './receipt-image.js';
 import { supabase } from './supabase.js';
 import { downloadTelegramFile } from './telegram-files.js';
 import { currentMonthVisualReport } from './reports.js';
+import { isCancelLastTransactionRequest } from './transaction-controls.js';
 
 type RpcResult = { transaction_id: string; workspace_id: string; was_duplicate: boolean };
 type LastTransaction = {
@@ -77,10 +78,6 @@ function isAutomatedWeeklyReportRequest(text: string): boolean {
 
 function isReceiptClaimRequest(text: string): boolean {
   return /reklam|blo[cč]ek|doklad|účten/iu.test(text);
-}
-
-function isCancelLastTransactionRequest(text: string): boolean {
-  return /\b(zruš|zrus|vymaž|vymaz|odvolaj)\b.*\b(posledn\p{L}*|naposledy)\b/iu.test(text);
 }
 
 function correctionText(text: string): string | null {
@@ -480,16 +477,23 @@ export function createTelegramBot(): Bot {
     }
   });
   bot.callbackQuery(/^txn:void:([0-9a-f-]{36})$/i, async (ctx) => {
-    if (!claimUpdate(ctx.update.update_id)) return;
+    if (!claimUpdate(ctx.update.update_id)) {
+      await ctx.answerCallbackQuery({ text: 'Toto kliknutie už bolo spracované.' });
+      return;
+    }
     try {
       await ctx.answerCallbackQuery();
-      if (ctx.chat?.type !== 'private' || !ctx.from) return;
+      if (!ctx.from) return;
       const voided = await voidTransaction(String(ctx.from.id), ctx.match[1]);
       if (!voided) {
         await ctx.reply('Tento zápis už nie je možné zrušiť. Možno bol už opravený alebo zrušený.');
         return;
       }
-      await ctx.reply(`🗑️ Zápis bol zrušený: ${formatAmount(voided.amount_minor, transactionCurrency(voided.currency_code))}${voided.note?.trim() ? ` (${voided.note.trim()})` : ''}. Do reportov sa už nezapočítava.`);
+      try { await ctx.editMessageReplyMarkup({ reply_markup: undefined }); } catch { /* original message may no longer be editable */ }
+      const label = voided.note?.trim()
+        ? `${voided.note.trim()} ${formatAmount(voided.amount_minor, transactionCurrency(voided.currency_code))}`
+        : formatAmount(voided.amount_minor, transactionCurrency(voided.currency_code));
+      await ctx.reply(`✅ Posledný zápis bol zrušený: ${label}. Do reportov sa už nezapočítava.`);
     } catch (error) {
       console.error('Telegram transaction void failed', {
         updateId: ctx.update.update_id,
