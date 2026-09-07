@@ -11,6 +11,12 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    env:
+      NODE_ENV: test
+      TELEGRAM_BOT_TOKEN: 123456789:ci_telegram_token_not_valid
+      SUPABASE_URL: https://ci.invalid
+      SUPABASE_SERVICE_ROLE_KEY: ci-service-role-key-not-valid
+      INTERNAL_CRON_SECRET: ci-internal-cron-secret-not-valid
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
