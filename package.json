@@ -14,7 +14,9 @@
     "build:web": "pnpm --filter @ofa/web build",
     "start:api": "pnpm --filter @ofa/api start",
     "verify:telegram-env": "pnpm --filter @ofa/api verify:telegram-env",
-    "typecheck": "pnpm --filter @ofa/api typecheck"
+    "typecheck": "pnpm --filter @ofa/api typecheck",
+    "test": "pnpm --filter @ofa/api test",
+    "verify": "pnpm typecheck && pnpm test && pnpm build && pnpm build:web"
   },
   "devDependencies": {
     "typescript": "^5.7.3"

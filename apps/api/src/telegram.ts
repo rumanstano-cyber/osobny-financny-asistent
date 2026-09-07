@@ -18,6 +18,7 @@ import { supabase } from './supabase.js';
 import { downloadTelegramFile } from './telegram-files.js';
 import { currentMonthVisualReport } from './reports.js';
 import { isCancelLastTransactionRequest } from './transaction-controls.js';
+import { enqueueTelegramMediaJob, wakeTelegramMediaJobWorker, type TelegramMediaJobPayload } from './async-jobs.js';
 
 type RpcResult = { transaction_id: string; workspace_id: string; was_duplicate: boolean };
 type LastTransaction = {
@@ -66,6 +67,21 @@ const processedUpdateIds = new Set<number>();
 const maxTrackedUpdates = 10_000;
 
 function name(ctx: Context) { return [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ') || ctx.from?.username || 'Používateľ'; }
+
+function telegramMediaJob(ctx: Context, kind: TelegramMediaJobPayload['kind'], fileId: string): TelegramMediaJobPayload | null {
+  if (!ctx.from || !ctx.chat || !ctx.message) return null;
+  return {
+    version: 1,
+    kind,
+    updateId: ctx.update.update_id,
+    messageId: ctx.message.message_id,
+    messageDate: ctx.message.date,
+    chatId: ctx.chat.id,
+    telegramUserId: ctx.from.id,
+    displayName: name(ctx),
+    fileId,
+  };
+}
 
 /** A report request must be handled before attempting to parse an amount. */
 function isCurrentMonthReportRequest(text: string): boolean {
@@ -160,11 +176,11 @@ async function requestLastTransactionVoid(ctx: Context): Promise<void> {
   await ctx.reply(`⚠️ Naozaj chceš zrušiť posledný zápis?\n${lastTransactionLabel(last)}`, { reply_markup: keyboard });
 }
 
-async function correctLastTransaction(telegramUserId: string, text: string, categorizationInput: CategorizationInput = {}): Promise<CorrectedTransaction | null> {
+async function correctLastTransaction(telegramUserId: string, text: string, categorizationInput: Omit<CategorizationInput, 'telegramUserId'> = {}): Promise<CorrectedTransaction | null> {
   const parsed = parseFinancialMessage(text);
   if (!parsed) return null;
   const category = parsed.transactionType === 'expense'
-    ? await categorizeExpense({ messageText: text, ...categorizationInput })
+    ? await categorizeExpense({ telegramUserId, messageText: text, ...categorizationInput })
     : { slug: parsed.categorySlug, label: parsed.categoryLabel };
   const { data, error } = await supabase.rpc('correct_last_telegram_transaction', {
     p_telegram_user_id: telegramUserId,
@@ -328,12 +344,12 @@ function claimUpdate(updateId: number): boolean {
   return true;
 }
 
-async function saveTransaction(ctx: Context, text: string, categorizationInput: CategorizationInput = {}): Promise<{ result: RpcResult; label: string; amount: number; currency: 'EUR' | 'CZK' | 'USD' | 'GBP' | 'HUF' | 'PLN' } | null> {
+async function saveTransaction(ctx: Context, text: string, categorizationInput: Omit<CategorizationInput, 'telegramUserId'> = {}): Promise<{ result: RpcResult; label: string; amount: number; currency: 'EUR' | 'CZK' | 'USD' | 'GBP' | 'HUF' | 'PLN' } | null> {
   if (!ctx.from || !ctx.message || !ctx.chat) return null;
   const parsed = parseFinancialMessage(text);
   if (!parsed) return null;
   const category = parsed.transactionType === 'expense'
-    ? await categorizeExpense({ messageText: text, ...categorizationInput })
+    ? await categorizeExpense({ telegramUserId: String(ctx.from.id), messageText: text, ...categorizationInput })
     : { slug: parsed.categorySlug, label: parsed.categoryLabel };
   const { data, error } = await supabase.rpc('record_telegram_transaction', { p_telegram_user_id: String(ctx.from.id), p_display_name: name(ctx), p_chat_id: String(ctx.chat.id), p_message_id: String(ctx.message.message_id), p_update_id: String(ctx.update.update_id), p_message_text: text, p_amount_minor: parsed.amountMinor, p_currency_code: parsed.currencyCode, p_transaction_type: parsed.transactionType, p_category_slug: category.slug, p_note: parsed.note, p_occurred_at: new Date(ctx.message.date * 1000).toISOString(), p_time_zone: 'Europe/Bratislava' });
   if (error) throw new Error(error.message);
@@ -438,7 +454,36 @@ async function handleReceipt(ctx: Context): Promise<void> {
     } catch (replyError) {
       console.error('Unable to send receipt failure message to Telegram', replyError);
     }
+    throw error;
   }
+}
+
+async function handleVoice(ctx: Context, fileId: string): Promise<void> {
+  await ctx.reply('🎙️ Prepisujem správu…');
+  const audio = await downloadTelegramFile(fileId);
+  const text = await transcribeVoice(audio.bytes, audio.path);
+  if (isCancelLastTransactionRequest(text)) {
+    await requestLastTransactionVoid(ctx);
+    return;
+  }
+  const saved = await saveTransaction(ctx, text);
+  await ctx.reply(saved ? `✅ Zapísané: ${saved.label} – ${formatAmount(saved.amount, saved.currency)}` : `Nerozumel som: „${text}“`);
+}
+
+/** Invoked by the durable worker, not by Telegram's HTTP webhook. */
+export async function processQueuedTelegramMedia(bot: Bot, payload: TelegramMediaJobPayload): Promise<void> {
+  const message = payload.kind === 'receipt'
+    ? { message_id: payload.messageId, date: payload.messageDate, photo: [{ file_id: payload.fileId }] }
+    : { message_id: payload.messageId, date: payload.messageDate, voice: { file_id: payload.fileId } };
+  const context = {
+    from: { id: payload.telegramUserId, first_name: payload.displayName },
+    chat: { id: payload.chatId, type: 'private' },
+    message,
+    update: { update_id: payload.updateId },
+    reply: (text: string, options?: object) => bot.api.sendMessage(payload.chatId, text, options as never),
+  } as unknown as Context;
+  if (payload.kind === 'receipt') await handleReceipt(context);
+  else await handleVoice(context, payload.fileId);
 }
 
 export function createTelegramBot(): Bot {
@@ -565,7 +610,13 @@ export function createTelegramBot(): Bot {
 
     try {
       if (ctx.message.photo) {
-        await handleReceipt(ctx);
+        const job = telegramMediaJob(ctx, 'receipt', ctx.message.photo.at(-1)?.file_id ?? '');
+        if (!job?.fileId) return;
+        const inserted = await enqueueTelegramMediaJob(job);
+        if (inserted) {
+          await ctx.reply('🔎 Bloček som prijal a bezpečne ho spracúvam…');
+          void wakeTelegramMediaJobWorker();
+        }
         return;
       }
 
@@ -573,15 +624,13 @@ export function createTelegramBot(): Bot {
       // A text message has neither `voice` nor `audio` and bypasses this branch.
       const audioMessage = ctx.message.voice ?? ctx.message.audio;
       if (audioMessage) {
-        await ctx.reply('🎙️ Prepisujem správu…');
-        const audio = await downloadTelegramFile(audioMessage.file_id);
-        const text = await transcribeVoice(audio.bytes, audio.path);
-        if (isCancelLastTransactionRequest(text)) {
-          await requestLastTransactionVoid(ctx);
-          return;
+        const job = telegramMediaJob(ctx, 'voice', audioMessage.file_id);
+        if (!job) return;
+        const inserted = await enqueueTelegramMediaJob(job);
+        if (inserted) {
+          await ctx.reply('🎙️ Hlasovú správu som prijal a prepisujem ju…');
+          void wakeTelegramMediaJobWorker();
         }
-        const saved = await saveTransaction(ctx, text);
-        await ctx.reply(saved ? `✅ Zapísané: ${saved.label} – ${formatAmount(saved.amount, saved.currency)}` : `Nerozumel som: „${text}“`);
         return;
       }
 

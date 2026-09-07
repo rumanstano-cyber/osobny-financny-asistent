@@ -57,6 +57,10 @@ const environmentSchema = z.object({
 
 const environment = environmentSchema.parse(process.env);
 
+if (environment.NODE_ENV === 'production' && environment.REGISTER_TELEGRAM_WEBHOOK && !environment.TELEGRAM_WEBHOOK_SECRET) {
+  throw new Error('TELEGRAM_WEBHOOK_SECRET must be configured when registering a production Telegram webhook');
+}
+
 export const config = {
   ...environment,
   // BASE_URL is intentionally independent from the Render-assigned PORT. Render

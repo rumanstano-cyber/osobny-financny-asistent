@@ -14,14 +14,20 @@ type Transaction = {
   transaction_category_assignments: Array<{ categories: { name: string } | null }> | null;
 };
 type Receipt = { id: string; merchant_name: string | null; receipt_date: string | null; total_amount_minor: number | null; currency_code: string | null };
+type DashboardSummary = {
+  income_minor: number;
+  expense_minor: number;
+  balance_minor: number;
+  receipt_count: number;
+  categories: Array<{ name: string; amount_minor: number }>;
+};
+type DashboardSummaryRow = Omit<DashboardSummary, 'categories'> & { categories: unknown };
+type DashboardRpcClient = {
+  rpc: (functionName: 'get_current_workspace_dashboard_summary', args: { p_workspace_id: string }) => Promise<{ data: DashboardSummaryRow[] | null; error: { message: string } | null }>;
+};
 
 function formatMoney(amountMinor: number, currency = 'EUR') {
   return new Intl.NumberFormat('sk-SK', { style: 'currency', currency }).format(amountMinor / 100);
-}
-
-function currentMonthStart() {
-  const date = new Date();
-  return new Date(date.getFullYear(), date.getMonth(), 1).toISOString();
 }
 
 function categoryName(transaction: Transaction) {
@@ -35,6 +41,7 @@ export function Dashboard({ session }: { session: Session }) {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [receipts, setReceipts] = useState<Receipt[]>([]);
   const [receiptCount, setReceiptCount] = useState(0);
+  const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [telegramLinked, setTelegramLinked] = useState(false);
   const [pairingCode, setPairingCode] = useState<{ code: string; expiresAt: string } | null>(null);
   const [loading, setLoading] = useState(true);
@@ -69,27 +76,38 @@ export function Dashboard({ session }: { session: Session }) {
         return;
       }
 
-      const [transactionResult, receiptResult] = await Promise.all([
+      const [transactionResult, receiptResult, summaryResult] = await Promise.all([
         supabase
-          .from('financial_transactions')
-          .select('id, transaction_type, amount_minor, currency_code, occurred_at, merchant_name, note, transaction_category_assignments!left(categories!inner(name))')
-          .eq('workspace_id', selectedWorkspaceId)
-          .gte('occurred_at', currentMonthStart())
-          .eq('status', 'confirmed')
+        .from('financial_transactions')
+        .select('id, transaction_type, amount_minor, currency_code, occurred_at, merchant_name, note, transaction_category_assignments!left(categories!inner(name))')
+        .eq('workspace_id', selectedWorkspaceId)
+        .eq('status', 'confirmed')
+        .is('deleted_at', null)
           .order('occurred_at', { ascending: false })
           .limit(12),
         supabase
           .from('ofa_receipts')
-          .select('id, merchant_name, receipt_date, total_amount_minor, currency_code', { count: 'exact' })
+          .select('id, merchant_name, receipt_date, total_amount_minor, currency_code')
           .eq('workspace_id', selectedWorkspaceId)
+          .is('deleted_at', null)
           .order('created_at', { ascending: false })
           .limit(4),
+        (supabase as unknown as DashboardRpcClient).rpc('get_current_workspace_dashboard_summary', { p_workspace_id: selectedWorkspaceId }),
       ]);
       if (transactionResult.error) throw transactionResult.error;
       if (receiptResult.error) throw receiptResult.error;
+      if (summaryResult.error) throw summaryResult.error;
       setTransactions((transactionResult.data ?? []) as unknown as Transaction[]);
       setReceipts((receiptResult.data ?? []) as Receipt[]);
-      setReceiptCount(receiptResult.count ?? 0);
+      const summaryRow = Array.isArray(summaryResult.data) ? summaryResult.data[0] : null;
+      setSummary(summaryRow ? {
+        income_minor: Number(summaryRow.income_minor),
+        expense_minor: Number(summaryRow.expense_minor),
+        balance_minor: Number(summaryRow.balance_minor),
+        receipt_count: Number(summaryRow.receipt_count),
+        categories: Array.isArray(summaryRow.categories) ? summaryRow.categories.map((item: { name?: unknown; amount_minor?: unknown }) => ({ name: String(item.name), amount_minor: Number(item.amount_minor) })) : [],
+      } : null);
+      setReceiptCount(summaryRow ? Number(summaryRow.receipt_count) : 0);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'Dáta sa nepodarilo načítať.');
     } finally {
@@ -99,17 +117,16 @@ export function Dashboard({ session }: { session: Session }) {
 
   useEffect(() => { void loadDashboard(); }, [loadDashboard]);
 
-  const summary = useMemo(() => {
-    const income = transactions.filter((item) => item.transaction_type === 'income').reduce((sum, item) => sum + item.amount_minor, 0);
-    const expenses = transactions.filter((item) => item.transaction_type === 'expense').reduce((sum, item) => sum + item.amount_minor, 0);
+  const displaySummary = useMemo(() => {
     const currency = workspaces.find((item) => item.id === workspaceId)?.base_currency_code ?? 'EUR';
-    const categories = new Map<string, number>();
-    for (const transaction of transactions.filter((item) => item.transaction_type === 'expense')) {
-      const name = categoryName(transaction);
-      categories.set(name, (categories.get(name) ?? 0) + transaction.amount_minor);
-    }
-    return { income, expenses, currency, categories: [...categories.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5) };
-  }, [transactions, workspaceId, workspaces]);
+    return {
+      income: summary?.income_minor ?? 0,
+      expenses: summary?.expense_minor ?? 0,
+      balance: summary?.balance_minor ?? 0,
+      currency,
+      categories: summary?.categories.slice(0, 5) ?? [],
+    };
+  }, [summary, workspaceId, workspaces]);
 
   async function createPairingCode() {
     setError('');
@@ -144,15 +161,15 @@ export function Dashboard({ session }: { session: Session }) {
       {error && <p className="notice error" role="alert">{error}</p>}
       {loading ? <p className="notice" aria-live="polite">Načítavam údaje…</p> : <>
         <section className="stats-grid" aria-label="Súhrn aktuálneho mesiaca">
-          <article className="stat-card"><span>Príjmy tento mesiac</span><strong>{formatMoney(summary.income, summary.currency)}</strong></article>
-          <article className="stat-card"><span>Výdavky tento mesiac</span><strong>{formatMoney(summary.expenses, summary.currency)}</strong></article>
-          <article className="stat-card emphasis"><span>Bilancia</span><strong>{formatMoney(summary.income - summary.expenses, summary.currency)}</strong></article>
+          <article className="stat-card"><span>Príjmy tento mesiac</span><strong>{formatMoney(displaySummary.income, displaySummary.currency)}</strong></article>
+          <article className="stat-card"><span>Výdavky tento mesiac</span><strong>{formatMoney(displaySummary.expenses, displaySummary.currency)}</strong></article>
+          <article className="stat-card emphasis"><span>Bilancia</span><strong>{formatMoney(displaySummary.balance, displaySummary.currency)}</strong></article>
           <article className="stat-card"><span>Načítané bločky</span><strong>{receiptCount}</strong></article>
         </section>
 
         <section className="content-card" aria-labelledby="category-heading">
           <div className="section-heading"><h2 id="category-heading">Kategórie výdavkov</h2><span>tento mesiac</span></div>
-          {summary.categories.length ? <ul className="category-list">{summary.categories.map(([name, total]) => <li key={name}><span>{name}</span><strong>{formatMoney(total, summary.currency)}</strong></li>)}</ul> : <p className="empty">Zatiaľ nemáte žiadne výdavky za tento mesiac.</p>}
+          {displaySummary.categories.length ? <ul className="category-list">{displaySummary.categories.map((category) => <li key={category.name}><span>{category.name}</span><strong>{formatMoney(category.amount_minor, displaySummary.currency)}</strong></li>)}</ul> : <p className="empty">Zatiaľ nemáte žiadne výdavky za tento mesiac.</p>}
         </section>
 
         <section className="content-card" aria-labelledby="transaction-heading">

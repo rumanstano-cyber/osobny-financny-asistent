@@ -119,14 +119,16 @@ Pravidlá rozhodovania pre neznáme alebo nešpecifikované položky:
 2. KONTEXT OBCHODNÍKA: Zohľadni typ predajcu alebo charakter obchodu (napr. servis, lekáreň, papiernictvo).
 3. PRAVIDLO ISTOTY (FALLBACK): Ak ani podľa účelu a predajcu nevieš s istotou (>80 %) určiť správnu kategóriu, ZARADIŠ POLOŽKU DO "Ostatné". Nikdy nehádaj a nevymýšľaj si nové kategórie.`;
 
-export async function classifyExpenseWithAi(context: string): Promise<ExpenseCategoryAiResult | null> {
+export async function classifyExpenseWithAi(context: string, allowedCategories: readonly { slug: string; name: string }[]): Promise<ExpenseCategoryAiResult | null> {
   if (!client) return null;
+  if (allowedCategories.length === 0) return null;
+  const allowed = allowedCategories.map((category) => `${category.slug} (${category.name})`).join(', ');
   try {
     const result = await client.chat.completions.create({
       model: 'gpt-4o-mini',
       response_format: { type: 'json_object' },
       messages: [
-        { role: 'system', content: expenseCategorizationPrompt },
+        { role: 'system', content: `${expenseCategorizationPrompt}\n\nAktívne kategórie pre tohto používateľa sú: ${allowed}. Vráť categorySlug výhradne z tohto aktuálneho zoznamu.` },
         { role: 'user', content: `Klasifikuj tento výdavok:\n${context.slice(0, 8_000)}` },
       ],
     });
