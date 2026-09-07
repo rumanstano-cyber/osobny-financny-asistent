@@ -92,12 +92,18 @@ async function drain(): Promise<void> {
 /** Starts one in-process worker; database row locks make multiple API replicas safe. */
 export function startTelegramMediaJobWorker(handler: (payload: TelegramMediaJobPayload) => Promise<void>): void {
   processJob = handler;
-  void wakeTelegramMediaJobWorker();
+  void wakeTelegramMediaJobWorker().catch((error: unknown) => {
+    console.error('Unable to start Telegram media worker', error);
+  });
   // A job that was delayed for retry must be picked up even if no new Telegram
   // update arrives. The queue remains durable in Supabase; this small poller
   // only wakes the claimant and is safe across process restarts/replicas.
   if (!workerPoller) {
-    workerPoller = setInterval(() => { void wakeTelegramMediaJobWorker(); }, 30_000);
+    workerPoller = setInterval(() => {
+      void wakeTelegramMediaJobWorker().catch((error: unknown) => {
+        console.error('Unable to poll Telegram media worker', error);
+      });
+    }, 30_000);
     workerPoller.unref();
   }
 }
