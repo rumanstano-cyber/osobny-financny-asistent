@@ -1,70 +1,66 @@
+import type { ReactNode } from 'react';
+
 const telegramBotUrl = 'https://t.me/MojeFinancie2026_bot';
+
+function TelegramHeader() {
+  return <div className="telegram-header"><span className="telegram-avatar">ƒ</span><div><b>Osobný finančný asistent</b><small>online</small></div></div>;
+}
+
+function ChatMessage({ from = 'bot', children }: { from?: 'user' | 'bot'; children: ReactNode }) {
+  return <div className={`chat-message ${from === 'user' ? 'chat-message-user' : 'chat-message-bot'}`}>{children}</div>;
+}
 
 export function LandingPage() {
   return (
     <main className="landing-shell">
       <header className="landing-nav">
         <a className="brand" href="/" aria-label="Osobný finančný asistent – úvod">ofa<span>•</span></a>
-        <nav aria-label="Hlavná navigácia">
-          <a href="#ako-to-funguje">Ako to funguje</a>
-          <a href="/login">Prihlásiť sa</a>
-        </nav>
+        <nav aria-label="Hlavná navigácia"><a href="#ako-to-funguje">Ako funguje</a><a href="#ukazky">Ukážky</a><a href="#reporty">Reporty</a><a href="/login">Prihlásiť sa</a></nav>
       </header>
 
       <section className="hero-section" aria-labelledby="hero-heading">
         <div className="hero-copy">
-          <p className="landing-eyebrow">FINANCIE BEZ TABULIEK A FORMULÁROV</p>
-          <h1 id="hero-heading">Napíš výdavok. O zvyšok sa postará asistent.</h1>
-          <p className="hero-lead">Zapisuj výdavky, pošli bloček a sleduj svoj mesačný prehľad — priamo v Telegrame, ktorý už používaš.</p>
-          <div className="hero-actions">
-            <a className="telegram-button" href={telegramBotUrl} target="_blank" rel="noreferrer">Začať v Telegrame <span aria-hidden="true">↗</span></a>
-            <a className="text-button" href="#ako-to-funguje">Pozrieť ako to funguje <span aria-hidden="true">↓</span></a>
-          </div>
-          <p className="hero-note">Bez inštalácie ďalšej aplikácie. Beta verzia je bezplatná.</p>
+          <p className="landing-eyebrow">FINANCIE CEZ TELEGRAM</p>
+          <h1 id="hero-heading">Pošli správu alebo fotku bločku do Telegramu. Výdavok sa uloží, bloček nestratíš a pri reklamácii ho nájdeš za pár sekúnd.</h1>
+          <p className="hero-lead">Osobný finančný asistent ti pomáha zapisovať výdavky a príjmy priamo v Telegrame. Bez tabuliek, formulárov a ďalšej aplikácie.</p>
+          <div className="hero-actions"><a className="telegram-button" href={telegramBotUrl} target="_blank" rel="noreferrer">Vyskúšať v Telegrame <span aria-hidden="true">↗</span></a><a className="text-button" href="#ukazky">Pozrieť ukážky <span aria-hidden="true">↓</span></a></div>
+          <p className="hero-note">Beta verzia je bezplatná. Stačí otvoriť Telegram.</p>
         </div>
-
-        <div className="phone-stage" aria-label="Ukážka Telegram konverzácie s finančným asistentom">
-          <div className="orbit orbit-one" />
-          <div className="orbit orbit-two" />
-          <div className="phone-frame">
-            <div className="phone-speaker" />
-            <div className="phone-header"><span className="bot-avatar">ƒ</span><div><b>Osobný finančný asistent</b><small>online</small></div></div>
-            <div className="phone-chat">
-              <div className="chat-day">DNES</div>
-              <div className="bubble user-bubble">Káva 3 € <small>10:42 ✓✓</small></div>
-              <div className="bubble bot-bubble"><b>✅ Zapísané</b><span>Reštaurácie · 3,00 €</span><small>10:42</small></div>
-              <div className="bubble user-bubble receipt-bubble">📷 <span>Fotka bločku</span><small>12:18 ✓✓</small></div>
-              <div className="bubble bot-bubble"><b>✅ Zapísané z bločku</b><span>Lidl · 45,20 €</span><small>12:18</small></div>
-            </div>
-            <div className="phone-input"><span>Napíšte správu…</span><b>➤</b></div>
-          </div>
-          <div className="floating-card report-card"><span>📊</span><div><small>Výdavky tento mesiac</small><b>428,60 €</b></div></div>
-          <div className="floating-card saved-card"><span>✓</span><div><small>Automaticky uložené</small><b>Bez ručného prepisovania</b></div></div>
+        <div className="hero-chat-stage" aria-label="Ukážka Telegram konverzácie">
+          <div className="hero-glow" />
+          <div className="telegram-phone"><TelegramHeader /><div className="telegram-chat hero-chat"><span className="chat-day">DNES</span><ChatMessage from="user">Káva 3,50 €<small>10:42 ✓✓</small></ChatMessage><ChatMessage><b>✅ Zapísané</b><span>Káva · 3,50 €</span><em>Reštaurácie</em><small>10:42</small></ChatMessage><ChatMessage from="user">🎙️ Hlasová správa<small>12:18 ✓✓</small></ChatMessage><ChatMessage><b>✅ Zapísané</b><span>Obed · 12,00 €</span><small>12:18</small></ChatMessage></div><div className="telegram-input"><span>Napíš správu…</span><b>➤</b></div></div>
+          <div className="hero-float hero-float-top"><span>📊</span><div><small>Výdavky tento mesiac</small><b>428,60 €</b></div></div>
+          <div className="hero-float hero-float-bottom"><span>✓</span><div><small>Automaticky uložené</small><b>Bez ručného prepisovania</b></div></div>
         </div>
       </section>
 
-      <section className="trust-strip" aria-label="Hlavné výhody">
-        <p><span>✦</span> Výdavok za pár sekúnd</p>
-        <p><span>✦</span> Bločky uložené na jednom mieste</p>
-        <p><span>✦</span> Mesačný prehľad v chate</p>
+      <section className="trust-strip" aria-label="Hlavné výhody"><p><span>✦</span> Zápis za pár sekúnd</p><p><span>✦</span> Bločky na jednom mieste</p><p><span>✦</span> Automatické reporty</p></section>
+
+      <section className="how-section section-wrap" id="ako-to-funguje" aria-labelledby="how-heading">
+        <div className="section-intro"><p className="landing-eyebrow">AKO TO FUNGUJE</p><h2 id="how-heading">Tri jednoduché kroky. Žiadne účtovanie.</h2></div>
+        <div className="steps-grid"><article><span className="step-number">01</span><div className="step-icon">✎</div><h3>Napíšeš alebo povieš</h3><p>„Káva 3,50 €“, „Benzín 60 €“ alebo jednoducho pošli hlasovú správu.</p></article><article><span className="step-number">02</span><div className="step-icon">✓</div><h3>Asistent uloží záznam</h3><p>Rozpozná sumu, príjem alebo výdavok a zaradí ho do kategórie.</p></article><article><span className="step-number">03</span><div className="step-icon">◔</div><h3>Dostaneš prehľad</h3><p>V chate máš reporty, uložené bločky aj možnosť opraviť posledný zápis.</p></article></div>
       </section>
 
-      <section className="how-section" id="ako-to-funguje" aria-labelledby="how-heading">
-        <div className="section-intro"><p className="landing-eyebrow">JEDNODUCHÝ NÁVYK</p><h2 id="how-heading">Tri kroky k lepšiemu prehľadu.</h2></div>
-        <div className="steps-grid">
-          <article><span className="step-number">01</span><div className="step-icon">⌁</div><h3>Napíš správu</h3><p>Stačí „Obed 12 €“ alebo „Benzín 60 €“. Asistent rozpozná sumu aj kategóriu.</p></article>
-          <article><span className="step-number">02</span><div className="step-icon">◫</div><h3>Pošli bloček</h3><p>Fotku uložíme, prečítame údaje a prepojíme ju s výdavkom. Potom stačí napísať „reklamácia topánky“ alebo „bloček Lidl“ a asistent nájde doklad pre reklamáciu.</p></article>
-          <article><span className="step-number">03</span><div className="step-icon">◔</div><h3>Pozri si prehľad</h3><p>Opýtaj sa na report. Uvidíš príjmy, výdavky a kategórie bez hľadania v banke.</p></article>
+      <section className="examples-section section-wrap" id="ukazky" aria-labelledby="examples-heading">
+        <div className="section-intro centered-intro"><p className="landing-eyebrow">AKO VYZERÁ CHAT</p><h2 id="examples-heading">Píšeš prirodzene. Asistent rozumie.</h2><p>Nemusíš poznať príkazy naspamäť. Stačí napísať to, čo by si povedal človeku.</p></div>
+        <div className="chat-examples-grid">
+          <article className="chat-card"><TelegramHeader /><div className="telegram-chat compact-chat"><ChatMessage from="user">Káva 3,50 €</ChatMessage><ChatMessage><b>✅ Zapísané: Káva – 3,50 €</b><span>Reštaurácie</span></ChatMessage></div><footer><span>Výdavok</span><b>Hotovo za pár sekúnd</b></footer></article>
+          <article className="chat-card"><TelegramHeader /><div className="telegram-chat compact-chat"><ChatMessage from="user">🎙️ Prišla mi výplata 1 500 €</ChatMessage><ChatMessage><b>✅ Zapísané: Výplata – 1 500,00 €</b><span>Príjem</span></ChatMessage></div><footer><span>Hlas alebo text</span><b>Príjmy aj výdavky</b></footer></article>
+          <article className="chat-card category-demo"><TelegramHeader /><div className="telegram-chat compact-chat"><ChatMessage from="user">Oprav kategóriu</ChatMessage><ChatMessage><b>Kam mám zaradiť poslednú transakciu?</b><span>Vyber kategóriu 👇</span><div className="inline-keyboard" aria-label="Ukážka výberu kategórie"><button type="button">Reštaurácie</button><button type="button">Potraviny</button><button type="button">Auto</button><button type="button">Bývanie</button></div></ChatMessage></div><footer><span>Oprava kategórie</span><b>Kliknutím alebo vetou</b></footer></article>
+          <article className="chat-card"><TelegramHeader /><div className="telegram-chat compact-chat"><ChatMessage from="user">Kávu daj do reštaurácie.</ChatMessage><ChatMessage><b>✅ Opravené.</b><span>Káva 3,50 € → Reštaurácie</span></ChatMessage><ChatMessage from="user">Zruš posledný zápis</ChatMessage><ChatMessage><b>⚠️ Naozaj chceš zrušiť posledný zápis?</b><div className="inline-keyboard single-action"><button type="button">Áno, zrušiť</button></div></ChatMessage></div><footer><span>Bezpečné opravy</span><b>Len posledný zápis</b></footer></article>
         </div>
       </section>
 
-      <section className="final-cta" aria-labelledby="cta-heading">
-        <p className="landing-eyebrow">ZAČNI DNES</p>
-        <h2 id="cta-heading">Tvoje financie. Jedna jednoduchá konverzácia.</h2>
-        <p>Vyskúšaj beta verziu zdarma a rozhodni sa až podľa toho, či ti naozaj šetrí čas.</p>
-        <a className="telegram-button light" href={telegramBotUrl} target="_blank" rel="noreferrer">Otvoriť Telegram bota <span aria-hidden="true">↗</span></a>
+      <section className="receipt-section section-wrap" aria-labelledby="receipt-heading">
+        <div className="receipt-copy"><p className="landing-eyebrow">BLOČKY A REKLAMÁCIE</p><h2 id="receipt-heading">Odfotíš teraz. Nájdeš, keď to budeš potrebovať.</h2><p>Pošli fotografiu bločku do Telegramu. Asistent ju uloží, prečíta dôležité údaje a spojí s tvojím finančným záznamom.</p><div className="feature-points"><p><span>✓</span> Obchod, dátum a suma pri jednom zázname</p><p><span>✓</span> Uložený doklad k dispozícii neskôr</p><p><span>✓</span> Vyhľadanie podľa obchodu alebo položky</p></div></div>
+        <div className="claim-demo"><div className="receipt-paper"><div className="receipt-paper-top"><b>ELEKTRO DOMOV</b><span>12. 09. 2026 · 189,00 €</span></div><div className="receipt-line"><span>Televízor 55&quot;</span><b>189,00 €</b></div><div className="receipt-total"><span>CELKOM</span><b>189,00 €</b></div><div className="receipt-code">▦ ▦ ▦ ▦ ▦</div></div><div className="claim-chat"><ChatMessage from="user">Nájdi mi bloček za televízor.</ChatMessage><ChatMessage><b>🧾 Bloček pre reklamáciu</b><span>Obchod: Elektro Domov</span><span>Dátum: 12. 09. 2026</span><span>Televízor 55&quot; · 189,00 €</span><em>Doklad je pripravený</em></ChatMessage></div><p className="claim-caption">Keď budeš riešiť reklamáciu, doklad nájdeš priamo v chate.</p></div>
       </section>
 
+      <section className="reports-section" id="reporty" aria-labelledby="reports-heading"><div className="section-wrap reports-layout"><div className="reports-copy"><p className="landing-eyebrow">PREHĽAD BEZ NÁMAHY</p><h2 id="reports-heading">Tvoje peniaze v pár jasných číslach.</h2><p>Týždenný report príde automaticky v pondelok do Telegramu. Mesačný prehľad dostaneš automaticky tiež; ak máš nastavený e-mail, príde aj tam.</p><div className="report-tags"><span>Automaticky</span><span>Príjmy a výdavky</span><span>Top kategórie</span></div></div><article className="report-preview" aria-label="Ukážka týždenného finančného reportu"><header><span>📊</span><div><b>Týždenný prehľad</b><small>2. – 8. september</small></div></header><div className="report-numbers"><div className="income-number"><span>Príjmy</span><b>+1 500,00 €</b></div><div className="expense-number"><span>Výdavky</span><b>−248,60 €</b></div><div><span>Bilancia</span><b>+1 251,40 €</b></div></div><div className="report-categories"><b>Top kategórie</b><p><span><i className="dot dot-green" />Potraviny</span><strong>98,40 €</strong></p><p><span><i className="dot dot-blue" />Reštaurácie</span><strong>64,20 €</strong></p><p><span><i className="dot dot-orange" />Auto</span><strong>60,00 €</strong></p></div><footer>Najviac si minul na potraviny. Tento týždeň máš pozitívnu bilanciu.</footer></article></div></section>
+
+      <section className="say-section section-wrap" aria-labelledby="say-heading"><div className="section-intro centered-intro"><p className="landing-eyebrow">ČO MÔŽEŠ NAPÍSAŤ</p><h2 id="say-heading">Takto jednoducho.</h2></div><div className="phrase-list"><span>„Káva 3,50 €“</span><span>„Nákup 42 €“</span><span>„Prišla mi výplata 1 500 €“</span><span>„Oprav kategóriu“</span><span>„Kávu daj do reštaurácie“</span><span>„Zruš posledný zápis“</span><span>„Vymaž poslednú transakciu“</span><span>„Nájdi mi bloček z Lidla“</span><span>„Koľko som minul tento mesiac?“</span></div></section>
+
+      <section className="final-cta" aria-labelledby="cta-heading"><p className="landing-eyebrow">ZAČNI DNES</p><h2 id="cta-heading">Tvoje financie. Jedna jednoduchá konverzácia.</h2><p>Otvor Telegram, napíš prvý výdavok a uvidíš, či ti tento spôsob sedí.</p><a className="telegram-button light" href={telegramBotUrl} target="_blank" rel="noreferrer">Vyskúšať v Telegrame <span aria-hidden="true">↗</span></a></section>
       <footer className="landing-footer"><a className="brand" href="/">ofa<span>•</span></a><span>Osobný finančný asistent · beta</span><a href="/login">Webový prehľad</a></footer>
     </main>
   );
