@@ -6,6 +6,7 @@ import { hasValidTelegramWebhookSecret } from './telegram-webhook-security.js';
 import { previousClosedWeekReference, startWeeklyReportScheduler } from './weekly-report-scheduler.js';
 import { startTelegramMediaJobWorker } from './async-jobs.js';
 import { processQueuedTelegramMedia } from './telegram.js';
+import { runReceiptPurchaseProtectionMaintenance, startReceiptPurchaseProtectionScheduler } from './receipt-purchase-protection.js';
 
 const app = Fastify({ logger: { level: config.NODE_ENV === 'production' ? 'info' : 'debug' } });
 const telegramBot = createTelegramBot();
@@ -34,6 +35,7 @@ function startSchedulerOnce(): void {
   // Supabase Cron is the production source of truth. Keep the in-process
   // scheduler only for local development where it is useful without pg_cron.
   if (config.NODE_ENV !== 'production') startWeeklyReportScheduler(telegramBot);
+  if (config.NODE_ENV !== 'production') startReceiptPurchaseProtectionScheduler(telegramBot);
   startTelegramMediaJobWorker((payload) => processQueuedTelegramMedia(telegramBot, payload));
   reportSchedulersStarted = true;
 }
@@ -89,6 +91,12 @@ app.post('/internal/reports/weekly/run', async (request, reply) => {
   if (request.headers['x-internal-cron-secret'] !== config.INTERNAL_CRON_SECRET) return reply.code(401).send({ error: 'unauthorized' });
   await ensureTelegramBotInitialized();
   return sendWeeklyReports(telegramBot, previousClosedWeekReference());
+});
+
+app.post('/internal/receipt-purchase-protection/run', async (request, reply) => {
+  if (request.headers['x-internal-cron-secret'] !== config.INTERNAL_CRON_SECRET) return reply.code(401).send({ error: 'unauthorized' });
+  await ensureTelegramBotInitialized();
+  return runReceiptPurchaseProtectionMaintenance(telegramBot);
 });
 
 app.post<{ Body: unknown }>('/api/telegram/webhook', async (request, reply) => {

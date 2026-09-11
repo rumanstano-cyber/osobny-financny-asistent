@@ -50,6 +50,7 @@ const environmentSchema = z.object({
   TELEGRAM_WEBHOOK_SECRET: z.string().min(24).optional(),
   OPENAI_API_KEY: z.string().min(1).optional(),
   INTERNAL_CRON_SECRET: z.string().min(24),
+  RECEIPT_STORAGE_RETENTION_HOURS: z.coerce.number().int().min(1).max(24 * 90).default(24 * 7),
   RESEND_API_KEY: z.string().min(1).optional(),
   EMAIL_FROM: z.string().email().optional(),
   EMAIL_TO: z.string().min(3).optional(),

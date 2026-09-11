@@ -19,6 +19,11 @@ import { downloadTelegramFile } from './telegram-files.js';
 import { currentMonthVisualReport } from './reports.js';
 import { isCancelLastTransactionRequest } from './transaction-controls.js';
 import { enqueueTelegramMediaJob, wakeTelegramMediaJobWorker, type TelegramMediaJobPayload } from './async-jobs.js';
+import {
+  decideReceiptPurchaseProtection,
+  type ReceiptPurchaseProtectionDecision,
+} from './receipt-purchase-protection.js';
+import { parseReceiptPurchaseProtectionCallbackData, receiptPurchaseProtectionCallbackData } from './receipt-purchase-protection-controls.js';
 
 type RpcResult = { transaction_id: string; workspace_id: string; was_duplicate: boolean };
 type LastTransaction = {
@@ -167,7 +172,7 @@ async function requestLastTransactionVoid(ctx: Context): Promise<void> {
   if (!ctx.from) return;
   const last = await getLastTransaction(String(ctx.from.id));
   if (!last) {
-    await ctx.reply('Zatiaľ nemáš žiadny potvrdený zápis na zrušenie.');
+    await ctx.reply('Zatiaľ nie je k dispozícii žiadny potvrdený zápis na zrušenie.');
     return;
   }
   const keyboard = new InlineKeyboard()
@@ -251,7 +256,7 @@ async function handleCategoryCorrection(ctx: Context, text: string): Promise<voi
   const telegramUserId = String(ctx.from.id);
   const last = await getLastTransaction(telegramUserId);
   if (!last) {
-    await ctx.reply('Zatiaľ nemáš žiadny potvrdený zápis na opravu kategórie.');
+    await ctx.reply('Zatiaľ nie je k dispozícii žiadny potvrdený zápis na opravu kategórie.');
     return;
   }
   const categories = await getCategoryCorrectionCategories(telegramUserId, last.transaction_id);
@@ -296,7 +301,7 @@ async function findReceiptClaims(telegramUserId: string, query: string): Promise
     p_limit: 5,
   });
   if (error) throw new Error(error.message);
-  return (data as ReceiptClaimMatch[] | null) ?? [];
+  return onlyArchivedReceiptClaims((data as ReceiptClaimMatch[] | null) ?? []);
 }
 
 async function getReceiptClaim(telegramUserId: string, receiptId: string): Promise<ReceiptClaimMatch | null> {
@@ -305,18 +310,31 @@ async function getReceiptClaim(telegramUserId: string, receiptId: string): Promi
     p_receipt_id: receiptId,
   });
   if (error) throw new Error(error.message);
-  return (data as ReceiptClaimMatch[] | null)?.[0] ?? null;
+  return (await onlyArchivedReceiptClaims((data as ReceiptClaimMatch[] | null) ?? []))[0] ?? null;
+}
+
+async function onlyArchivedReceiptClaims(receipts: ReceiptClaimMatch[]): Promise<ReceiptClaimMatch[]> {
+  if (!receipts.length) return [];
+  const { data, error } = await supabase
+    .from('ofa_receipts')
+    .select('id')
+    .in('id', receipts.map((receipt) => receipt.receipt_id))
+    .eq('archive_status', 'archived')
+    .is('deleted_at', null);
+  if (error) throw new Error(error.message);
+  const archivedIds = new Set((data ?? []).map((receipt) => receipt.id));
+  return receipts.filter((receipt) => archivedIds.has(receipt.receipt_id));
 }
 
 async function handleReceiptClaimSearch(ctx: Context, query: string): Promise<void> {
   if (!ctx.from) return;
   const matches = await findReceiptClaims(String(ctx.from.id), query);
   if (!matches.length) {
-    await ctx.reply(`Nenašiel som bloček k „${query}“. Skús názov obchodu alebo položky z dokladu.`);
+    await ctx.reply(`Bloček k „${query}“ sa nenašiel. Skús názov obchodu alebo položky z dokladu.`);
     return;
   }
   if (matches.length === 1) {
-    await ctx.reply('✅ Našiel som bloček. Posielam jeho pôvodnú fotografiu.');
+    await ctx.reply('✅ Bloček bol nájdený. Posielam jeho pôvodnú fotografiu.');
     await sendReceiptForClaim(ctx, matches[0]);
     return;
   }
@@ -328,7 +346,7 @@ async function handleReceiptClaimSearch(ctx: Context, query: string): Promise<vo
     const amount = receipt.total_amount_minor === null ? '' : ` · ${formatAmount(receipt.total_amount_minor, claimCurrency(receipt.currency_code))}`;
     keyboard.text(`${merchant} · ${date}${amount}`.slice(0, 60), `claim:${receipt.receipt_id}`).row();
   }
-  await ctx.reply(`Našiel som ${matches.length} bločkov. Vyber ten správny pre reklamáciu:`, { reply_markup: keyboard });
+  await ctx.reply(`Našlo sa ${matches.length} bločkov. Vyber správny doklad pre reklamáciu:`, { reply_markup: keyboard });
 }
 
 function claimUpdate(updateId: number): boolean {
@@ -355,6 +373,27 @@ async function saveTransaction(ctx: Context, text: string, categorizationInput: 
   if (error) throw new Error(error.message);
   const result = (data as RpcResult[] | null)?.[0];
   return result ? { result, label: category.label, amount: parsed.amountMinor, currency: parsed.currencyCode } : null;
+}
+
+function receiptPurchaseProtectionDecisionText(decision: ReceiptPurchaseProtectionDecision, keptReceipt: boolean): string {
+  if (decision.archive_status === 'archived') {
+    if (decision.protection_status === 'active' && decision.protection_ends_on) {
+      return `✅ Doklad je uložený a sleduje sa zákonná 2-ročná ochrana nákupu do ${decision.protection_ends_on}. Pripomeniem ju 60, 30 a 7 dní pred týmto dátumom.`;
+    }
+    return '✅ Doklad je uložený. Sledovanie sa nespustilo, pretože súvisiaci finančný záznam už bol zrušený.';
+  }
+  if (decision.archive_status === 'pending_deletion') {
+    return keptReceipt
+      ? 'Doklad je už označený na technické odstránenie a jeho mazanie už prebieha.'
+      : 'Finančný záznam zostáva uložený. Pôvodná fotografia dokladu bude po technickej retenčnej lehote bezpečne odstránená.';
+  }
+  if (decision.archive_status === 'cleanup_claimed') {
+    return 'Doklad už čaká na technické odstránenie a jeho uloženie sa nedá spoľahlivo obnoviť.';
+  }
+  if (decision.archive_status === 'storage_deleted') {
+    return 'Pôvodná fotografia tohto dokladu už bola po retenčnej lehote odstránená. Finančný záznam ostal zachovaný.';
+  }
+  return 'Rozhodnutie o uložení dokladu sa nepodarilo dokončiť.';
 }
 
 async function handleReceipt(ctx: Context): Promise<void> {
@@ -416,7 +455,8 @@ async function handleReceipt(ctx: Context): Promise<void> {
     const sha256 = `\\x${hash}`;
     const { data: storedFile, error: storedFileError } = await supabase.from('stored_files').insert({ workspace_id: saved.result.workspace_id, storage_provider: 'supabase_storage', storage_key: key, content_type: 'image/jpeg', byte_size: receiptImage.bytes.length, sha256, uploaded_by_user_id: transaction.created_by_user_id }).select('id').single();
     if (storedFileError || !storedFile) throw new Error(storedFileError?.message ?? 'Receipt file metadata failed');
-    const { data: receipt, error: receiptError } = await supabase.from('ofa_receipts').insert({ workspace_id: saved.result.workspace_id, file_id: storedFile.id, uploaded_by_user_id: transaction.created_by_user_id, status: 'completed', merchant_name: extraction.merchantName, receipt_date: extraction.receiptDate, total_amount_minor: extraction.amountMinor, currency_code: 'EUR', ocr_text: extraction.ocrText, ocr_language: 'sk' }).select('id').single();
+    const retentionUntil = new Date(Date.now() + config.RECEIPT_STORAGE_RETENTION_HOURS * 60 * 60 * 1_000).toISOString();
+    const { data: receipt, error: receiptError } = await supabase.from('ofa_receipts').insert({ workspace_id: saved.result.workspace_id, file_id: storedFile.id, uploaded_by_user_id: transaction.created_by_user_id, status: 'completed', archive_status: 'decision_pending', retention_until: retentionUntil, merchant_name: extraction.merchantName, receipt_date: extraction.receiptDate, total_amount_minor: extraction.amountMinor, currency_code: 'EUR', ocr_text: extraction.ocrText, ocr_language: 'sk' }).select('id').single();
     if (receiptError || !receipt) throw new Error(receiptError?.message ?? 'Receipt metadata failed');
     if (extraction.items.length) {
       stage = 'uloženie položiek bločku';
@@ -438,6 +478,10 @@ async function handleReceipt(ctx: Context): Promise<void> {
     const { error: receiptLinkError } = await supabase.from('receipt_transaction_links').insert({ receipt_id: receipt.id, transaction_id: saved.result.transaction_id, link_source: 'ocr', confidence: ekasa ? 1 : 0.8 });
     if (receiptLinkError) throw new Error(receiptLinkError.message);
     await ctx.reply(`${ekasa ? '✅ Zapísané z eKasa QR' : '✅ Zapísané z bločku'}: ${extraction.merchantName ?? 'Výdavok'} – ${formatAmount(extraction.amountMinor, 'EUR')}`);
+    const keyboard = new InlineKeyboard()
+      .text('ÁNO', receiptPurchaseProtectionCallbackData(receipt.id, true))
+      .text('NIE', receiptPurchaseProtectionCallbackData(receipt.id, false));
+    await ctx.reply('Chceš tento doklad uložiť a sledovať zákonnú 2-ročnú ochranu nákupu?', { reply_markup: keyboard });
   } catch (error) {
     // Pass the Error object itself to preserve its full stack trace in Render.
     console.error('Receipt processing failed', {
@@ -467,7 +511,7 @@ async function handleVoice(ctx: Context, fileId: string): Promise<void> {
     return;
   }
   const saved = await saveTransaction(ctx, text);
-  await ctx.reply(saved ? `✅ Zapísané: ${saved.label} – ${formatAmount(saved.amount, saved.currency)}` : `Nerozumel som: „${text}“`);
+  await ctx.reply(saved ? `✅ Zapísané: ${saved.label} – ${formatAmount(saved.amount, saved.currency)}` : `Správu sa nepodarilo rozpoznať: „${text}“`);
 }
 
 /** Invoked by the durable worker, not by Telegram's HTTP webhook. */
@@ -532,6 +576,32 @@ export function createTelegramBot(): Bot {
         error: error instanceof Error ? error.message : String(error),
       });
       try { await ctx.reply('❌ Bloček sa nepodarilo odoslať. Skús výber zopakovať o chvíľu.'); } catch { /* update is already acknowledged */ }
+    }
+  });
+  bot.callbackQuery(/^rpp:[0-9a-f-]{36}:[yn]$/i, async (ctx) => {
+    if (!claimUpdate(ctx.update.update_id)) {
+      await ctx.answerCallbackQuery({ text: 'Toto kliknutie už bolo spracované.' });
+      return;
+    }
+    try {
+      await ctx.answerCallbackQuery();
+      if (ctx.chat?.type !== 'private' || !ctx.from) return;
+      const callback = parseReceiptPurchaseProtectionCallbackData(ctx.callbackQuery.data);
+      if (!callback) return;
+      const decision = await decideReceiptPurchaseProtection(String(ctx.from.id), callback.receiptId, callback.keepReceipt);
+      if (!decision) {
+        await ctx.reply('Tento doklad už nie je dostupný alebo k nemu nie je prístup.');
+        return;
+      }
+      try { await ctx.editMessageReplyMarkup({ reply_markup: undefined }); } catch { /* original message may no longer be editable */ }
+      await ctx.reply(receiptPurchaseProtectionDecisionText(decision, callback.keepReceipt));
+    } catch (error) {
+      console.error('Telegram receipt purchase protection decision failed', {
+        updateId: ctx.update.update_id,
+        telegramUserId: ctx.from?.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      try { await ctx.reply('❌ Nastavenie uloženia dokladu sa nepodarilo zmeniť. Skús to prosím o chvíľu znova.'); } catch { /* update is already acknowledged */ }
     }
   });
   bot.callbackQuery(/^txn:void:([0-9a-f-]{36})$/i, async (ctx) => {
@@ -614,7 +684,7 @@ export function createTelegramBot(): Bot {
         if (!job?.fileId) return;
         const inserted = await enqueueTelegramMediaJob(job);
         if (inserted) {
-          await ctx.reply('🔎 Bloček som prijal a bezpečne ho spracúvam…');
+          await ctx.reply('🔎 Bloček bol prijatý a bezpečne sa spracúva…');
           void wakeTelegramMediaJobWorker();
         }
         return;
@@ -628,7 +698,7 @@ export function createTelegramBot(): Bot {
         if (!job) return;
         const inserted = await enqueueTelegramMediaJob(job);
         if (inserted) {
-          await ctx.reply('🎙️ Hlasovú správu som prijal a prepisujem ju…');
+          await ctx.reply('🎙️ Hlasová správa bola prijatá a prepisuje sa…');
           void wakeTelegramMediaJobWorker();
         }
         return;
@@ -660,12 +730,12 @@ export function createTelegramBot(): Bot {
           const last = await getLastTransaction(String(ctx.from.id));
           await ctx.reply(last
             ? `Posledný zápis je: ${lastTransactionLabel(last)}\n\nNapíš napríklad: <code>oprav posledný zápis na Obed 8,50 €</code>`
-            : 'Zatiaľ nemáš žiadny potvrdený zápis na opravu.', { parse_mode: 'HTML' });
+            : 'Zatiaľ nie je k dispozícii žiadny potvrdený zápis na opravu.', { parse_mode: 'HTML' });
           return;
         }
         const corrected = await correctLastTransaction(String(ctx.from.id), replacement);
         if (!corrected) {
-          await ctx.reply('Nerozumel som oprave alebo nemáš žiadny potvrdený zápis. Skús napríklad: „oprav posledný zápis na Obed 8,50 €“.');
+          await ctx.reply('Opravu sa nepodarilo rozpoznať alebo nie je k dispozícii žiadny potvrdený zápis. Skús napríklad: „oprav posledný zápis na Obed 8,50 €“.');
           return;
         }
         await ctx.reply(`✏️ Opravené: ${corrected.category_name ?? 'Výdavok'} – ${formatAmount(corrected.amount_minor, transactionCurrency(corrected.currency_code))}${corrected.note?.trim() ? ` (${corrected.note.trim()})` : ''}`);
@@ -713,7 +783,7 @@ export function createTelegramBot(): Bot {
       }
 
       const saved = await saveTransaction(ctx, text);
-      await ctx.reply(saved ? `✅ Zapísané: ${saved.label} – ${formatAmount(saved.amount, saved.currency)}` : 'Nerozumel som sume. Skús napríklad: Káva 3 €');
+      await ctx.reply(saved ? `✅ Zapísané: ${saved.label} – ${formatAmount(saved.amount, saved.currency)}` : 'Sumu sa nepodarilo rozpoznať. Skús napríklad: Káva 3 €');
     } catch (error) {
       // The webhook has already been acknowledged; log failures without allowing
       // them to escape middleware and trigger a Telegram redelivery.
