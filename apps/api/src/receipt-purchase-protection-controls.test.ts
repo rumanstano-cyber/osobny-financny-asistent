@@ -21,13 +21,12 @@ test('receipt protection callback data is compact and carries only the receipt i
   assert.equal(parseReceiptPurchaseProtectionCallbackData('claim:' + receiptId), null);
 });
 
-test('each reminder uses the approved cautious legal wording', () => {
+test('each reminder names the receipt merchant and purchase date', () => {
   for (const days of [60, 30, 7] as const) {
-    const text = receiptPurchaseProtectionReminderText(days);
+    const text = receiptPurchaseProtectionReminderText(days, 'LIDL', '2026-09-10');
     assert.match(text, new RegExp(`O ${days} dní`, 'u'));
-    assert.match(text, /môže na tento produkt poskytovať aj dlhšiu záruku/iu);
-    assert.match(text, /odporúčame overiť si jej podmienky/iu);
-    assert.doesNotMatch(text, /končí reklamácia|zanika.*právo/iu);
+    assert.match(text, /dokladu z LIDL z 10\. 9\. 2026\./u);
+    assert.doesNotMatch(text, /produkt/iu);
   }
 });
 

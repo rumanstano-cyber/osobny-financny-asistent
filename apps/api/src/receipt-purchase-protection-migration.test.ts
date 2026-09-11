@@ -10,6 +10,10 @@ const manualDurationMigration = readFileSync(
   new URL('../../../supabase/migrations/20260911150000_add_manual_warranty_duration.sql', import.meta.url),
   'utf8',
 );
+const reminderDeliveryMigration = readFileSync(
+  new URL('../../../supabase/migrations/20260911160000_add_receipt_reminder_delivery_details.sql', import.meta.url),
+  'utf8',
+);
 const service = readFileSync(new URL('./receipt-purchase-protection.ts', import.meta.url), 'utf8');
 const telegram = readFileSync(new URL('./telegram.ts', import.meta.url), 'utf8');
 
@@ -76,4 +80,14 @@ test('manual longer warranty updates remain server-scoped and preserve durable r
   assert.match(manualDurationMigration, /milestone_days in \(60, 30, 7\)/u);
   assert.match(manualDurationMigration, /revoke all on function public\.update_telegram_receipt_purchase_protection_duration/u);
   assert.match(telegram, /updateReceiptPurchaseProtectionDuration/u);
+});
+
+test('reminder delivery details stay scoped to a claimed, archived receipt', () => {
+  assert.match(reminderDeliveryMigration, /get_receipt_purchase_protection_reminder_delivery/u);
+  assert.match(reminderDeliveryMigration, /reminder\.status = 'sending'/u);
+  assert.match(reminderDeliveryMigration, /receipt\.archive_status = 'archived'/u);
+  assert.match(reminderDeliveryMigration, /stored_file\.storage_key/u);
+  assert.match(reminderDeliveryMigration, /revoke all on function public\.get_receipt_purchase_protection_reminder_delivery/u);
+  assert.match(service, /deliverReceiptReminder/u);
+  assert.match(service, /createSignedUrl/u);
 });

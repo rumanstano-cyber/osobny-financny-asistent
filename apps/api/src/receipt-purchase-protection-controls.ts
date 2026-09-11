@@ -46,6 +46,24 @@ export function parseReceiptPurchaseProtectionCallbackData(value: string): { rec
   return { receiptId: match[1], keepReceipt: match[2].toLowerCase() === 'y' };
 }
 
-export function receiptPurchaseProtectionReminderText(days: 60 | 30 | 7): string {
-  return `O ${days} dní končí sledovaná zákonná 2-ročná ochrana nákupu. Výrobca alebo predajca môže na tento produkt poskytovať aj dlhšiu záruku, preto odporúčame overiť si jej podmienky, aby ste neprišli o možnosť reklamácie.`;
+function formatReceiptPurchaseDate(receiptDate: string | null | undefined): string | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(receiptDate ?? '');
+  if (!match) return null;
+  return `${Number(match[3])}. ${Number(match[2])}. ${match[1]}.`;
+}
+
+export function receiptPurchaseProtectionReminderText(
+  days: 60 | 30 | 7,
+  merchantName?: string | null,
+  receiptDate?: string | null,
+): string {
+  const merchant = merchantName?.trim() || null;
+  const formattedDate = formatReceiptPurchaseDate(receiptDate);
+
+  if (merchant && formattedDate) {
+    return `⏳ O ${days} dní končí sledovaná záruka k dokladu z ${merchant} z ${formattedDate}`;
+  }
+  if (merchant) return `⏳ O ${days} dní končí sledovaná záruka k dokladu z ${merchant}.`;
+  if (formattedDate) return `⏳ O ${days} dní končí sledovaná záruka k dokladu z nákupu z ${formattedDate}`;
+  return `⏳ O ${days} dní končí sledovaná záruka k uloženému dokladu.`;
 }

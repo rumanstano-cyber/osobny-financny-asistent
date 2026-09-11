@@ -2,6 +2,7 @@ import type { Bot } from 'grammy';
 import cron from 'node-cron';
 import { config } from './config.js';
 import { receiptPurchaseProtectionReminderText } from './receipt-purchase-protection-controls.js';
+import { deliverReceiptReminder } from './receipt-purchase-protection-delivery.js';
 import { supabase } from './supabase.js';
 
 export type ReceiptPurchaseProtectionDecision = {
@@ -20,6 +21,7 @@ export type ReceiptPurchaseProtectionDurationUpdate = {
 
 type StorageDeletionClaim = { receipt_id: string; storage_key: string };
 type ReminderClaim = { reminder_id: string; telegram_user_id: string; milestone_days: 60 | 30 | 7 };
+type ReminderDeliveryDetails = { merchant_name: string | null; receipt_date: string | null; storage_key: string | null };
 
 export async function decideReceiptPurchaseProtection(
   telegramUserId: string,
@@ -77,11 +79,50 @@ async function sendDueReceiptPurchaseProtectionReminders(bot: Bot): Promise<numb
   let delivered = 0;
   for (const claim of (data as ReminderClaim[] | null) ?? []) {
     try {
-      const message = await bot.api.sendMessage(claim.telegram_user_id, receiptPurchaseProtectionReminderText(claim.milestone_days));
+      let details: ReminderDeliveryDetails | null = null;
+      try {
+        const { data: reminderDetails, error: detailsError } = await supabase.rpc('get_receipt_purchase_protection_reminder_delivery', {
+          p_reminder_id: claim.reminder_id,
+        });
+        if (detailsError) throw new Error(detailsError.message);
+        details = (reminderDetails as ReminderDeliveryDetails[] | null)?.[0] ?? null;
+      } catch (detailsError) {
+        console.error('Receipt purchase protection reminder details failed', {
+          reminderId: claim.reminder_id,
+          error: detailsError instanceof Error ? detailsError.message : String(detailsError),
+        });
+      }
+
+      let signedReceiptUrl: string | null = null;
+      if (details?.storage_key) {
+        try {
+          const { data: signedUrl, error: signedUrlError } = await supabase.storage.from('ofa-receipts').createSignedUrl(details.storage_key, 10 * 60);
+          if (signedUrlError || !signedUrl?.signedUrl) throw new Error(signedUrlError?.message ?? 'Signed URL for receipt was not created');
+          signedReceiptUrl = signedUrl.signedUrl;
+        } catch (imagePreparationError) {
+          console.error('Receipt purchase protection reminder image preparation failed', {
+            reminderId: claim.reminder_id,
+            error: imagePreparationError instanceof Error ? imagePreparationError.message : String(imagePreparationError),
+          });
+        }
+      }
+
+      const delivery = await deliverReceiptReminder(
+        bot.api,
+        claim.telegram_user_id,
+        receiptPurchaseProtectionReminderText(claim.milestone_days, details?.merchant_name, details?.receipt_date),
+        signedReceiptUrl,
+      );
+      if (delivery.receiptImageError) {
+        console.error('Receipt purchase protection reminder image delivery failed', {
+          reminderId: claim.reminder_id,
+          error: delivery.receiptImageError,
+        });
+      }
       const { error: completionError } = await supabase.rpc('complete_receipt_purchase_protection_reminder', {
         p_reminder_id: claim.reminder_id,
         p_succeeded: true,
-        p_provider_message_id: String(message.message_id),
+        p_provider_message_id: delivery.providerMessageId,
         p_error: null,
       });
       if (completionError) throw new Error(completionError.message);
