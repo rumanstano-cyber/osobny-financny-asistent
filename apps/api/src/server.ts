@@ -145,7 +145,9 @@ try {
         app.log.info({ webhookUrl: `${config.BASE_URL}/api/telegram/webhook` }, 'Telegram webhook registered');
       } catch (error) {
         // Keep the web service healthy if Telegram is temporarily unavailable.
-        app.log.error({ error }, 'Telegram webhook registration failed');
+        // Grammy's error object includes the complete setWebhook payload, which
+        // may contain TELEGRAM_WEBHOOK_SECRET. Never serialize that object.
+        app.log.error({ error: error instanceof Error ? error.message : String(error) }, 'Telegram webhook registration failed');
       }
     }
   }
