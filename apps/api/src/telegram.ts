@@ -378,7 +378,7 @@ async function saveTransaction(ctx: Context, text: string, categorizationInput: 
 function receiptPurchaseProtectionDecisionText(decision: ReceiptPurchaseProtectionDecision, keptReceipt: boolean): string {
   if (decision.archive_status === 'archived') {
     if (decision.protection_status === 'active' && decision.protection_ends_on) {
-      return `✅ Doklad je uložený a sleduje sa zákonná 2-ročná ochrana nákupu do ${decision.protection_ends_on}. Pripomeniem ju 60, 30 a 7 dní pred týmto dátumom.`;
+      return `✅ Doklad je uložený a záruku sledujem 2 roky (do ${decision.protection_ends_on}). Pripomeniem ju 60, 30 a 7 dní pred týmto dátumom. Ak máte dlhšiu záruku, napíšte mi jej dĺžku.`;
     }
     return '✅ Doklad je uložený. Sledovanie sa nespustilo, pretože súvisiaci finančný záznam už bol zrušený.';
   }
