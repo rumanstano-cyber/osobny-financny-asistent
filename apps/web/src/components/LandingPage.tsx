@@ -22,6 +22,7 @@ export function LandingPage() {
         <div className="hero-copy">
           <p className="landing-eyebrow">FINANCIE CEZ TELEGRAM</p>
           <h1 id="hero-heading">Pošli správu alebo fotku bločku do Telegramu. Výdavok sa uloží, bloček nestratíš a pri reklamácii ho nájdeš za pár sekúnd.</h1>
+          <p className="hero-warranty-note">Ak chceš sledovať záruku, doklad uložíme a upozorníme ťa 60, 30 a 7 dní pred jej koncom. Spolu s upozornením dostaneš aj uložený bloček.</p>
           <p className="hero-lead">Osobný finančný asistent ti pomáha zapisovať výdavky a príjmy priamo v Telegrame. Bez tabuliek, formulárov a ďalšej aplikácie.</p>
           <div className="hero-actions"><a className="telegram-button" href={telegramBotUrl} target="_blank" rel="noreferrer">Vyskúšať v Telegrame <span aria-hidden="true">↗</span></a><a className="text-button" href="#ukazky">Pozrieť ukážky <span aria-hidden="true">↓</span></a></div>
           <p className="hero-note">Beta verzia je bezplatná. Stačí otvoriť Telegram.</p>
@@ -52,8 +53,31 @@ export function LandingPage() {
       </section>
 
       <section className="receipt-section section-wrap" aria-labelledby="receipt-heading">
-        <div className="receipt-copy"><p className="landing-eyebrow">BLOČKY A REKLAMÁCIE</p><h2 id="receipt-heading">Odfotíš dnes. Pri reklamácii nájdeš za pár sekúnd.</h2><p>Pošli fotografiu bločku do Telegramu. Asistent ju uloží, prečíta dôležité údaje a spojí s tvojím finančným záznamom.</p><div className="feature-points"><p><span>✓</span> Obchod, dátum a suma pri jednom zázname</p><p><span>✓</span> Uložený doklad k dispozícii neskôr</p><p><span>✓</span> Vyhľadanie podľa obchodu alebo položky</p></div><a className="telegram-button receipt-cta" href={telegramBotUrl} target="_blank" rel="noreferrer">Vyskúšať v Telegrame <span aria-hidden="true">↗</span></a></div>
+        <div className="receipt-copy"><p className="landing-eyebrow">BLOČKY A REKLAMÁCIE</p><h2 id="receipt-heading">Odfotíš dnes. Pri reklamácii nájdeš za pár sekúnd.</h2><p>Po spracovaní bločku si vyberieš, či ho chceš uchovať pre zákonnú 2-ročnú ochranu nákupu. Finančný záznam zostáva vždy.</p><div className="feature-points"><p><span>✓</span> Obchod, dátum a suma pri jednom zázname</p><p><span>✓</span> Uložený doklad len po výslovnom potvrdení</p><p><span>✓</span> Pripomienky 60, 30 a 7 dní pred koncom sledovania</p></div><a className="telegram-button receipt-cta" href={telegramBotUrl} target="_blank" rel="noreferrer">Vyskúšať v Telegrame <span aria-hidden="true">↗</span></a></div>
         <div className="claim-demo"><div className="receipt-paper"><div className="receipt-paper-top"><b>ELEKTRO DOMOV</b><span>12. 09. 2026 · 189,00 €</span></div><div className="receipt-line"><span>Televízor 55&quot;</span><b>189,00 €</b></div><div className="receipt-total"><span>CELKOM</span><b>189,00 €</b></div><div className="receipt-code">▦ ▦ ▦ ▦ ▦</div></div><div className="claim-chat"><ChatMessage from="user">Nájdi mi bloček za televízor.</ChatMessage><ChatMessage><b>🧾 Bloček pre reklamáciu</b><span>Obchod: Elektro Domov</span><span>Dátum: 12. 09. 2026</span><span>Televízor 55&quot; · 189,00 €</span><em>Doklad je pripravený</em></ChatMessage></div><p className="claim-caption">Keď budeš riešiť reklamáciu, doklad nájdeš priamo v chate.</p></div>
+      </section>
+
+      <section className="warranty-section section-wrap" aria-labelledby="warranty-heading">
+        <div className="warranty-intro">
+          <p className="landing-eyebrow">SLEDOVANIE ZÁRUKY</p>
+          <h2 id="warranty-heading">Doklad uložíš raz. Pripomenieme ho v správny čas.</h2>
+          <p>Pri bločku stačí jedno rozhodnutie. Žiadne formuláre, žiadne vyberanie položiek.</p>
+          <div className="warranty-steps" aria-label="Tri kroky sledovania záruky">
+            <p><b>1</b> Pošli bloček.</p>
+            <p><b>2</b> Ak chceš sledovať záruku, klikni ✅ ÁNO.</p>
+            <p><b>3</b> Pred koncom záruky dostaneš upozornenie aj s uloženým dokladom.</p>
+          </div>
+          <p className="warranty-duration-note"><b>Máš dlhšiu záruku?</b> Stačí napísať napr. „3 roky“ alebo „36 mesiacov“.</p>
+        </div>
+        <div className="warranty-chat-card" aria-label="Ukážka sledovania záruky v Telegrame">
+          <TelegramHeader />
+          <div className="telegram-chat warranty-chat">
+            <ChatMessage><b>Obsahuje tento bloček výrobok vhodný na sledovanie reklamácie / záruky?</b><div className="inline-keyboard warranty-choice" aria-label="Ukážka voľby záruky"><button type="button">✅ ÁNO</button><button type="button">❌ NIE</button></div></ChatMessage>
+            <ChatMessage><b>✅ Doklad je uložený a záruku sledujeme 2 roky.</b><span>Ak máte dlhšiu záruku, napíšte mi jej dĺžku.</span></ChatMessage>
+            <ChatMessage from="user">3 roky</ChatMessage>
+            <ChatMessage><b>⏳ O 30 dní končí sledovaná záruka k dokladu z LIDL z 10. 9. 2026.</b><span className="receipt-attachment">🧾 Uložený bloček priložený</span></ChatMessage>
+          </div>
+        </div>
       </section>
 
       <section className="reports-section" id="reporty" aria-labelledby="reports-heading"><div className="section-wrap reports-layout"><div className="reports-copy"><p className="landing-eyebrow">PREHĽAD BEZ NÁMAHY</p><h2 id="reports-heading">Tvoje peniaze v pár jasných číslach.</h2><p>Týždenný report príde automaticky v pondelok do Telegramu. Mesačný prehľad dostaneš automaticky tiež; ak máš nastavený e-mail, príde aj tam.</p><div className="report-tags"><span>Automaticky</span><span>Príjmy a výdavky</span><span>Top kategórie</span></div></div><article className="report-preview" aria-label="Ukážka týždenného finančného reportu"><header><span>📊</span><div><b>Týždenný prehľad</b><small>2. – 8. september</small></div></header><div className="report-numbers"><div className="income-number"><span>Príjmy</span><b>+1 500,00 €</b></div><div className="expense-number"><span>Výdavky</span><b>−248,60 €</b></div><div><span>Bilancia</span><b>+1 251,40 €</b></div></div><div className="report-categories"><b>Top kategórie</b><p><span><i className="dot dot-green" />Potraviny</span><strong>98,40 €</strong></p><p><span><i className="dot dot-blue" />Reštaurácie</span><strong>64,20 €</strong></p><p><span><i className="dot dot-orange" />Auto</span><strong>60,00 €</strong></p></div><footer>Najvyššie výdavky boli na potraviny. Bilancia za tento týždeň je pozitívna.</footer></article></div></section>
