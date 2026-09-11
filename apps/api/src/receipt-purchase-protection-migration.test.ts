@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 const migration = readFileSync(
-  new URL('../../../supabase/migrations/20260910203407_receipt_purchase_protection.sql', import.meta.url),
+  new URL('../../../supabase/migrations/20260911061657_receipt_purchase_protection.sql', import.meta.url),
   'utf8',
 );
 const service = readFileSync(new URL('./receipt-purchase-protection.ts', import.meta.url), 'utf8');
@@ -50,8 +50,8 @@ test('reminders are durable, only scheduled at 60/30/7 days, and voiding cancels
 
 test('Telegram asks after successful receipt processing and production cron invokes protected maintenance', () => {
   assert.match(telegram, /Chceš tento doklad uložiť a sledovať zákonnú 2-ročnú ochranu nákupu\?/u);
-  assert.match(telegram, /text\('ÁNO', receiptPurchaseProtectionCallbackData\(receipt\.id, true\)\)/u);
-  assert.match(telegram, /text\('NIE', receiptPurchaseProtectionCallbackData\(receipt\.id, false\)\)/u);
+  assert.match(telegram, /text\('✅ ÁNO', receiptPurchaseProtectionCallbackData\(receipt\.id, true\)\)/u);
+  assert.match(telegram, /text\('❌ NIE', receiptPurchaseProtectionCallbackData\(receipt\.id, false\)\)/u);
   assert.match(migration, /receipt-purchase-protection-maintenance/u);
   assert.match(migration, /X-Internal-Cron-Secret/u);
   assert.match(migration, /enable row level security/u);

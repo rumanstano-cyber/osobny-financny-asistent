@@ -479,8 +479,8 @@ async function handleReceipt(ctx: Context): Promise<void> {
     if (receiptLinkError) throw new Error(receiptLinkError.message);
     await ctx.reply(`${ekasa ? '✅ Zapísané z eKasa QR' : '✅ Zapísané z bločku'}: ${extraction.merchantName ?? 'Výdavok'} – ${formatAmount(extraction.amountMinor, 'EUR')}`);
     const keyboard = new InlineKeyboard()
-      .text('ÁNO', receiptPurchaseProtectionCallbackData(receipt.id, true))
-      .text('NIE', receiptPurchaseProtectionCallbackData(receipt.id, false));
+      .text('✅ ÁNO', receiptPurchaseProtectionCallbackData(receipt.id, true))
+      .text('❌ NIE', receiptPurchaseProtectionCallbackData(receipt.id, false));
     await ctx.reply('Chceš tento doklad uložiť a sledovať zákonnú 2-ročnú ochranu nákupu?', { reply_markup: keyboard });
   } catch (error) {
     // Pass the Error object itself to preserve its full stack trace in Render.
