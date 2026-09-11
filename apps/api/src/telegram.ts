@@ -481,7 +481,7 @@ async function handleReceipt(ctx: Context): Promise<void> {
     const keyboard = new InlineKeyboard()
       .text('✅ ÁNO', receiptPurchaseProtectionCallbackData(receipt.id, true))
       .text('❌ NIE', receiptPurchaseProtectionCallbackData(receipt.id, false));
-    await ctx.reply('Chceš tento doklad uložiť a sledovať zákonnú 2-ročnú ochranu nákupu?', { reply_markup: keyboard });
+    await ctx.reply('Obsahuje tento bloček výrobok vhodný na sledovanie reklamácie / záruky?', { reply_markup: keyboard });
   } catch (error) {
     // Pass the Error object itself to preserve its full stack trace in Render.
     console.error('Receipt processing failed', {

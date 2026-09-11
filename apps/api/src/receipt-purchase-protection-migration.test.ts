@@ -49,7 +49,7 @@ test('reminders are durable, only scheduled at 60/30/7 days, and voiding cancels
 });
 
 test('Telegram asks after successful receipt processing and production cron invokes protected maintenance', () => {
-  assert.match(telegram, /Chceš tento doklad uložiť a sledovať zákonnú 2-ročnú ochranu nákupu\?/u);
+  assert.match(telegram, /Obsahuje tento bloček výrobok vhodný na sledovanie reklamácie \/ záruky\?/u);
   assert.match(telegram, /text\('✅ ÁNO', receiptPurchaseProtectionCallbackData\(receipt\.id, true\)\)/u);
   assert.match(telegram, /text\('❌ NIE', receiptPurchaseProtectionCallbackData\(receipt\.id, false\)\)/u);
   assert.match(migration, /receipt-purchase-protection-maintenance/u);
