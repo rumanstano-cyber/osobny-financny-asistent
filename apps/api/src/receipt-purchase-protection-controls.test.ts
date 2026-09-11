@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  formatWarrantyDuration,
+  parseWarrantyDurationMonths,
   parseReceiptPurchaseProtectionCallbackData,
   receiptPurchaseProtectionCallbackData,
   receiptPurchaseProtectionReminderText,
@@ -27,4 +29,14 @@ test('each reminder uses the approved cautious legal wording', () => {
     assert.match(text, /odporúčame overiť si jej podmienky/iu);
     assert.doesNotMatch(text, /končí reklamácia|zanika.*právo/iu);
   }
+});
+
+test('warranty duration parser recognizes Slovak year and month expressions safely', () => {
+  assert.equal(parseWarrantyDurationMonths('moja záruka je 3 roky'), 36);
+  assert.equal(parseWarrantyDurationMonths('3 roky'), 36);
+  assert.equal(parseWarrantyDurationMonths('36 mesiacov'), 36);
+  assert.equal(parseWarrantyDurationMonths('3 a pol roka'), 42);
+  assert.equal(parseWarrantyDurationMonths('2 roky a 6 mesiacov'), 30);
+  assert.equal(parseWarrantyDurationMonths('káva 3 €'), null);
+  assert.equal(formatWarrantyDuration(30), '2 roky a 6 mesiacov');
 });

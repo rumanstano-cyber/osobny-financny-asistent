@@ -11,6 +11,13 @@ export type ReceiptPurchaseProtectionDecision = {
   was_changed: boolean;
 };
 
+export type ReceiptPurchaseProtectionDurationUpdate = {
+  protection_id: string;
+  warranty_duration_months: number;
+  protection_ends_on: string;
+  was_changed: boolean;
+};
+
 type StorageDeletionClaim = { receipt_id: string; storage_key: string };
 type ReminderClaim = { reminder_id: string; telegram_user_id: string; milestone_days: 60 | 30 | 7 };
 
@@ -27,6 +34,18 @@ export async function decideReceiptPurchaseProtection(
   });
   if (error) throw new Error(error.message);
   return (data as ReceiptPurchaseProtectionDecision[] | null)?.[0] ?? null;
+}
+
+export async function updateReceiptPurchaseProtectionDuration(
+  telegramUserId: string,
+  warrantyDurationMonths: number,
+): Promise<ReceiptPurchaseProtectionDurationUpdate | null> {
+  const { data, error } = await supabase.rpc('update_telegram_receipt_purchase_protection_duration', {
+    p_telegram_user_id: telegramUserId,
+    p_warranty_duration_months: warrantyDurationMonths,
+  });
+  if (error) throw new Error(error.message);
+  return (data as ReceiptPurchaseProtectionDurationUpdate[] | null)?.[0] ?? null;
 }
 
 async function cleanUpExpiredReceiptStorage(): Promise<number> {

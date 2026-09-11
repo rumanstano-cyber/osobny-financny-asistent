@@ -6,6 +6,10 @@ const migration = readFileSync(
   new URL('../../../supabase/migrations/20260911061657_receipt_purchase_protection.sql', import.meta.url),
   'utf8',
 );
+const manualDurationMigration = readFileSync(
+  new URL('../../../supabase/migrations/20260911150000_add_manual_warranty_duration.sql', import.meta.url),
+  'utf8',
+);
 const service = readFileSync(new URL('./receipt-purchase-protection.ts', import.meta.url), 'utf8');
 const telegram = readFileSync(new URL('./telegram.ts', import.meta.url), 'utf8');
 
@@ -59,8 +63,17 @@ test('Telegram asks after successful receipt processing and production cron invo
 });
 
 test('successful warranty confirmation invites the user to share a longer warranty without changing the callback flow', () => {
-  assert.match(telegram, /Doklad je uložený a záruku sledujem 2 roky/u);
+  assert.match(telegram, /Doklad je uložený a záruku sledujeme 2 roky/u);
   assert.match(telegram, /Ak máte dlhšiu záruku, napíšte mi jej dĺžku\./u);
   assert.match(telegram, /receiptPurchaseProtectionCallbackData\(receipt\.id, true\)/u);
   assert.match(telegram, /receiptPurchaseProtectionCallbackData\(receipt\.id, false\)/u);
+});
+
+test('manual longer warranty updates remain server-scoped and preserve durable reminders', () => {
+  assert.match(manualDurationMigration, /warranty_duration_months smallint not null default 24/u);
+  assert.match(manualDurationMigration, /update_telegram_receipt_purchase_protection_duration/u);
+  assert.match(manualDurationMigration, /receipt\.purchase_protection_duration_updated/u);
+  assert.match(manualDurationMigration, /milestone_days in \(60, 30, 7\)/u);
+  assert.match(manualDurationMigration, /revoke all on function public\.update_telegram_receipt_purchase_protection_duration/u);
+  assert.match(telegram, /updateReceiptPurchaseProtectionDuration/u);
 });

@@ -21,9 +21,15 @@ import { isCancelLastTransactionRequest } from './transaction-controls.js';
 import { enqueueTelegramMediaJob, wakeTelegramMediaJobWorker, type TelegramMediaJobPayload } from './async-jobs.js';
 import {
   decideReceiptPurchaseProtection,
+  updateReceiptPurchaseProtectionDuration,
   type ReceiptPurchaseProtectionDecision,
 } from './receipt-purchase-protection.js';
-import { parseReceiptPurchaseProtectionCallbackData, receiptPurchaseProtectionCallbackData } from './receipt-purchase-protection-controls.js';
+import {
+  formatWarrantyDuration,
+  parseReceiptPurchaseProtectionCallbackData,
+  parseWarrantyDurationMonths,
+  receiptPurchaseProtectionCallbackData,
+} from './receipt-purchase-protection-controls.js';
 
 type RpcResult = { transaction_id: string; workspace_id: string; was_duplicate: boolean };
 type LastTransaction = {
@@ -378,7 +384,7 @@ async function saveTransaction(ctx: Context, text: string, categorizationInput: 
 function receiptPurchaseProtectionDecisionText(decision: ReceiptPurchaseProtectionDecision, keptReceipt: boolean): string {
   if (decision.archive_status === 'archived') {
     if (decision.protection_status === 'active' && decision.protection_ends_on) {
-      return `✅ Doklad je uložený a záruku sledujem 2 roky (do ${decision.protection_ends_on}). Pripomeniem ju 60, 30 a 7 dní pred týmto dátumom. Ak máte dlhšiu záruku, napíšte mi jej dĺžku.`;
+      return '✅ Doklad je uložený a záruku sledujeme 2 roky. Ak máte dlhšiu záruku, napíšte mi jej dĺžku.';
     }
     return '✅ Doklad je uložený. Sledovanie sa nespustilo, pretože súvisiaci finančný záznam už bol zrušený.';
   }
@@ -708,6 +714,15 @@ export function createTelegramBot(): Bot {
       if (!text) {
         await ctx.reply('Podporujem textové správy, hlasové správy a fotky bločkov.');
         return;
+      }
+
+      const warrantyDurationMonths = parseWarrantyDurationMonths(text);
+      if (warrantyDurationMonths !== null) {
+        const update = await updateReceiptPurchaseProtectionDuration(String(ctx.from.id), warrantyDurationMonths);
+        if (update) {
+          await ctx.reply(`✅ Záruka bola nastavená na ${formatWarrantyDuration(update.warranty_duration_months)} (do ${update.protection_ends_on}).`);
+          return;
+        }
       }
 
       if (isCategoryCorrectionRequest(text)) {
