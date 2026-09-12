@@ -41,6 +41,25 @@ type LastTransaction = {
   note: string | null;
   occurred_at: string;
 };
+
+const WARRANTY_DURATION_CONTEXT_TTL_MS = 30 * 60 * 1_000;
+const warrantyDurationPendingUntil = new Map<string, number>();
+
+function markWarrantyDurationPending(telegramUserId: string): void {
+  warrantyDurationPendingUntil.set(telegramUserId, Date.now() + WARRANTY_DURATION_CONTEXT_TTL_MS);
+}
+
+function hasPendingWarrantyDuration(telegramUserId: string): boolean {
+  const pendingUntil = warrantyDurationPendingUntil.get(telegramUserId);
+  if (!pendingUntil) return false;
+  if (pendingUntil > Date.now()) return true;
+  warrantyDurationPendingUntil.delete(telegramUserId);
+  return false;
+}
+
+function clearWarrantyDurationPending(telegramUserId: string): void {
+  warrantyDurationPendingUntil.delete(telegramUserId);
+}
 type CorrectedTransaction = {
   transaction_id: string;
   amount_minor: number;
@@ -599,6 +618,11 @@ export function createTelegramBot(): Bot {
         await ctx.reply('Tento doklad už nie je dostupný alebo k nemu nie je prístup.');
         return;
       }
+      if (callback.keepReceipt && decision.archive_status === 'archived' && decision.protection_status === 'active') {
+        markWarrantyDurationPending(String(ctx.from.id));
+      } else {
+        clearWarrantyDurationPending(String(ctx.from.id));
+      }
       try { await ctx.editMessageReplyMarkup({ reply_markup: undefined }); } catch { /* original message may no longer be editable */ }
       await ctx.reply(receiptPurchaseProtectionDecisionText(decision, callback.keepReceipt));
     } catch (error) {
@@ -716,11 +740,22 @@ export function createTelegramBot(): Bot {
         return;
       }
 
+      const telegramUserId = String(ctx.from.id);
+      const warrantyDurationIsPending = hasPendingWarrantyDuration(telegramUserId);
       const warrantyDurationMonths = parseWarrantyDurationMonths(text);
       if (warrantyDurationMonths !== null) {
-        const update = await updateReceiptPurchaseProtectionDuration(String(ctx.from.id), warrantyDurationMonths);
+        // This runs before every general text intent and the financial parser.
+        // The RPC is additionally scoped to the last selected protection, so a
+        // process restart cannot turn an immediate duration reply into a charge.
+        const update = await updateReceiptPurchaseProtectionDuration(telegramUserId, warrantyDurationMonths);
         if (update) {
-          await ctx.reply(`✅ Záruka bola nastavená na ${formatWarrantyDuration(update.warranty_duration_months)} (do ${update.protection_ends_on}).`);
+          clearWarrantyDurationPending(telegramUserId);
+          await ctx.reply(`✅ Záruka upravená na ${formatWarrantyDuration(update.warranty_duration_months)}.`);
+          return;
+        }
+        if (warrantyDurationIsPending) {
+          clearWarrantyDurationPending(telegramUserId);
+          await ctx.reply('❌ Záruku sa nepodarilo upraviť.');
           return;
         }
       }

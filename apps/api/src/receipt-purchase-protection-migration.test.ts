@@ -80,6 +80,9 @@ test('manual longer warranty updates remain server-scoped and preserve durable r
   assert.match(manualDurationMigration, /milestone_days in \(60, 30, 7\)/u);
   assert.match(manualDurationMigration, /revoke all on function public\.update_telegram_receipt_purchase_protection_duration/u);
   assert.match(telegram, /updateReceiptPurchaseProtectionDuration/u);
+  assert.ok(telegram.indexOf('const warrantyDurationMonths = parseWarrantyDurationMonths') < telegram.lastIndexOf('const saved = await saveTransaction'));
+  assert.match(telegram, /markWarrantyDurationPending/u);
+  assert.match(telegram, /Záruka upravená na/u);
 });
 
 test('reminder delivery details stay scoped to a claimed, archived receipt', () => {

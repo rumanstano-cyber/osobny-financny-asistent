@@ -12,20 +12,23 @@ export function parseWarrantyDurationMonths(value: string): number | null {
     .replace(/[\u0300-\u036f]/gu, '')
     .toLowerCase()
     .trim();
-  const durationOnly = /^(?:\d+\s*rok(?:y|ov|a)?(?:\s+a\s+\d+\s*mesiac(?:ov|e|a)?)?|\d+\s+a\s+pol\s+rok(?:y|ov|a)?|\d+\s*(?:mesiac(?:ov|e|a)?|mes\.))\s*$/u.test(normalized);
+  // Telegram users commonly omit the space or use a period after the number:
+  // "3roky" and "3.roky" must remain warranty intent, never an expense.
+  const unitSeparator = String.raw`\s*\.?\s*`;
+  const durationOnly = new RegExp(String.raw`^(?:\d+${unitSeparator}rok(?:y|ov|a)?(?:\s+a\s+\d+${unitSeparator}mesiac(?:ov|e|a)?)?|\d+\s+a\s+pol\s+rok(?:y|ov|a)?|\d+${unitSeparator}(?:mesiac(?:ov|e|a)?|mes\.))\s*$`, 'u').test(normalized);
   const mentionsWarranty = /z[aá]ruk|reklam[aá]ci/iu.test(value);
   if (!durationOnly && !mentionsWarranty) return null;
 
-  const combined = /\b(\d+)\s*rok(?:y|ov|a)?\s+a\s*(\d+)\s*mesiac(?:ov|e|a)?\b/u.exec(normalized);
+  const combined = new RegExp(String.raw`\b(\d+)${unitSeparator}rok(?:y|ov|a)?\s+a\s*(\d+)${unitSeparator}mesiac(?:ov|e|a)?\b`, 'u').exec(normalized);
   if (combined) return Number(combined[1]) * 12 + Number(combined[2]);
 
   const halfYear = /\b(\d+)\s+a\s+pol\s+rok(?:y|ov|a)?\b/u.exec(normalized);
   if (halfYear) return Number(halfYear[1]) * 12 + 6;
 
-  const months = /\b(\d+)\s*(?:mesiac(?:ov|e|a)?|mes\.)\b/u.exec(normalized);
+  const months = new RegExp(String.raw`\b(\d+)${unitSeparator}(?:mesiac(?:ov|e|a)?|mes\.)\b`, 'u').exec(normalized);
   if (months) return Number(months[1]);
 
-  const years = /\b(\d+)\s*(?:rok(?:y|ov|a)?|r\.)\b/u.exec(normalized);
+  const years = new RegExp(String.raw`\b(\d+)${unitSeparator}(?:rok(?:y|ov|a)?|r\.)\b`, 'u').exec(normalized);
   return years ? Number(years[1]) * 12 : null;
 }
 

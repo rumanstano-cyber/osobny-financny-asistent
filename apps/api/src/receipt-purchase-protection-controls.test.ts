@@ -7,6 +7,7 @@ import {
   receiptPurchaseProtectionCallbackData,
   receiptPurchaseProtectionReminderText,
 } from './receipt-purchase-protection-controls.js';
+import { parseFinancialMessage } from './finance-parser.js';
 
 const receiptId = '00000000-0000-4000-8000-000000000001';
 
@@ -33,9 +34,12 @@ test('each reminder names the receipt merchant and purchase date', () => {
 test('warranty duration parser recognizes Slovak year and month expressions safely', () => {
   assert.equal(parseWarrantyDurationMonths('moja záruka je 3 roky'), 36);
   assert.equal(parseWarrantyDurationMonths('3 roky'), 36);
+  assert.equal(parseWarrantyDurationMonths('3.roky'), 36);
+  assert.equal(parseWarrantyDurationMonths('3roky'), 36);
   assert.equal(parseWarrantyDurationMonths('36 mesiacov'), 36);
   assert.equal(parseWarrantyDurationMonths('3 a pol roka'), 42);
   assert.equal(parseWarrantyDurationMonths('2 roky a 6 mesiacov'), 30);
   assert.equal(parseWarrantyDurationMonths('káva 3 €'), null);
+  assert.ok(parseFinancialMessage('káva 3 €'));
   assert.equal(formatWarrantyDuration(30), '2 roky a 6 mesiacov');
 });
