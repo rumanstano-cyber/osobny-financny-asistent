@@ -16,6 +16,31 @@ test('splits comma-separated expenses without splitting decimal commas', () => {
   ]);
 });
 
+test('splits space-separated entries after every complete amount', () => {
+  const items = validItems('pivo 1,50 € Lidl 15 € benzín 20 € drogéria 12 €');
+  assert.deepEqual(items.map((item) => [item.note, item.amountMinor]), [
+    ['pivo', 150], ['Lidl', 1500], ['benzín', 2000], ['drogéria', 1200],
+  ]);
+});
+
+test('splits a space-separated sequence with whole euro amounts', () => {
+  const items = validItems('káva 3 € Lidl 10 € benzín 40 €');
+  assert.deepEqual(items.map((item) => [item.note, item.amountMinor]), [
+    ['káva', 300], ['Lidl', 1000], ['benzín', 4000],
+  ]);
+});
+
+test('splits decimal-comma and decimal-point sequences without punctuation', () => {
+  assert.deepEqual(
+    validItems('káva 3,50 € Lidl 10,20 € benzín 40 €').map((item) => item.amountMinor),
+    [350, 1020, 4000],
+  );
+  assert.deepEqual(
+    validItems('káva 3.50 € Lidl 10.20 € benzín 40 €').map((item) => item.amountMinor),
+    [350, 1020, 4000],
+  );
+});
+
 test('keeps decimal commas within their own financial item', () => {
   const items = validItems('káva 3,50 €, Lidl 10,20 €, benzín 40 €');
   assert.deepEqual(items.map((item) => item.amountMinor), [350, 1020, 4000]);
@@ -46,4 +71,13 @@ test('rejects an incomplete explicitly separated batch instead of saving one ite
 
 test('keeps a polite suffix on the ordinary single-expense parser path', () => {
   assert.deepEqual(parseMultiExpenseMessage('káva 3 €, prosím'), { kind: 'not_multi' });
+});
+
+test('does not treat warranty duration inputs as multi-expense entries', () => {
+  assert.deepEqual(parseMultiExpenseMessage('3 roky'), { kind: 'not_multi' });
+  assert.deepEqual(parseMultiExpenseMessage('36 mesiacov'), { kind: 'not_multi' });
+});
+
+test('rejects an incomplete natural batch without returning a partial list', () => {
+  assert.deepEqual(parseMultiExpenseMessage('pivo 1,50 € Lidl 15 € benzín'), { kind: 'invalid' });
 });

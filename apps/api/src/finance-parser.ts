@@ -13,6 +13,8 @@ function normalize(value: string): string {
 
 const amountPattern = String.raw`(?:€\s*)?(\d{1,12}(?:[\s.,]\d{1,2})?)\s*(€|eur|kč|czk|\$|usd|£|gbp|huf|ft|pln)?`;
 
+export type FinancialAmountMatch = { value: string; index: number; end: number };
+
 function extractAmount(input: string): { raw: string; currencyCode: ParsedTransaction['currencyCode']; minorUnit: number } | null {
   const match = input.match(new RegExp(amountPattern, 'iu'));
   if (!match) return null;
@@ -34,7 +36,19 @@ function extractAmount(input: string): { raw: string; currencyCode: ParsedTransa
 
 /** Counts monetary expressions without changing the tolerant single-entry parser. */
 export function countFinancialAmounts(input: string): number {
-  return [...input.matchAll(new RegExp(amountPattern, 'giu'))].length;
+  return findFinancialAmounts(input).length;
+}
+
+/**
+ * Returns each complete monetary expression with its source range. The batch
+ * parser uses these ranges to split a natural "description + amount" sequence
+ * without ever splitting a decimal comma or decimal point.
+ */
+export function findFinancialAmounts(input: string): FinancialAmountMatch[] {
+  return [...input.matchAll(new RegExp(amountPattern, 'giu'))]
+    .flatMap((match) => match.index === undefined
+      ? []
+      : [{ value: match[0], index: match.index, end: match.index + match[0].length }]);
 }
 
 function toMinorUnits(raw: string, minorUnit: number): number | null {

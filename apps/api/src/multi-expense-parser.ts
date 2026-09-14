@@ -1,4 +1,9 @@
-import { countFinancialAmounts, parseFinancialMessage, type ParsedTransaction } from './finance-parser.js';
+import {
+  countFinancialAmounts,
+  findFinancialAmounts,
+  parseFinancialMessage,
+  type ParsedTransaction,
+} from './finance-parser.js';
 
 export type MultiExpenseParseResult =
   | { kind: 'not_multi' }
@@ -27,6 +32,45 @@ function isPoliteSuffix(segment: string): boolean {
   return ['prosim', 'dakujem', 'vdaka'].includes(normalized);
 }
 
+function cleanItemDescription(value: string): string {
+  return value.replace(/^[\s,;|/–—-]+/u, '').trim();
+}
+
+function isStandaloneConnector(value: string): boolean {
+  const normalized = value
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase()
+    .replace(/[^\p{L}]/gu, '');
+  return ['a', 'i', 'alebo', 'plus', 'and'].includes(normalized);
+}
+
+/**
+ * Parses a repeated natural-language sequence such as
+ * "pivo 1,50 € Lidl 15 € benzín 20 €". Every range before an amount belongs
+ * to that amount; any missing description or trailing ambiguity rejects the
+ * whole batch rather than allowing a partial save.
+ */
+function parseImplicitAmountPairs(text: string): MultiExpenseParseResult {
+  const amounts = findFinancialAmounts(text);
+  if (amounts.length < 2) return { kind: 'not_multi' };
+
+  const items: ParsedTransaction[] = [];
+  let cursor = 0;
+  for (const amount of amounts) {
+    const description = cleanItemDescription(text.slice(cursor, amount.index));
+    if (!description || isStandaloneConnector(description)) return { kind: 'invalid' };
+    const parsed = parseFinancialMessage(`${description} ${amount.value}`);
+    if (!parsed || !parsed.note.trim()) return { kind: 'invalid' };
+    items.push(parsed);
+    cursor = amount.end;
+  }
+
+  const trailingText = cleanItemDescription(text.slice(cursor));
+  if (trailingText && !isPoliteSuffix(trailingText)) return { kind: 'invalid' };
+  return { kind: 'valid', items };
+}
+
 /**
  * A multi-entry message is accepted only when every explicitly separated part
  * has a description and exactly one amount. This deliberately makes a batch
@@ -34,9 +78,8 @@ function isPoliteSuffix(segment: string): boolean {
  */
 export function parseMultiExpenseMessage(text: string): MultiExpenseParseResult {
   const { segments, hasSeparator } = splitCandidateItems(text);
-  if (!hasSeparator) return { kind: 'not_multi' };
-
   const amountCount = countFinancialAmounts(text);
+  if (!hasSeparator && amountCount < 2) return { kind: 'not_multi' };
   // Do not let an obviously incomplete batch fall through to the single-entry
   // parser. Polite trailing words remain valid for the ordinary entry path.
   if (amountCount < 2) {
@@ -47,15 +90,6 @@ export function parseMultiExpenseMessage(text: string): MultiExpenseParseResult 
     );
     return hasIncompleteItem ? { kind: 'invalid' } : { kind: 'not_multi' };
   }
-  if (segments.length < 2 || segments.some((segment) => !segment.trim())) return { kind: 'invalid' };
 
-  const items: ParsedTransaction[] = [];
-  for (const segment of segments) {
-    if (countFinancialAmounts(segment) !== 1) return { kind: 'invalid' };
-    const parsed = parseFinancialMessage(segment.trim());
-    if (!parsed || !parsed.note.trim()) return { kind: 'invalid' };
-    items.push(parsed);
-  }
-
-  return items.length >= 2 ? { kind: 'valid', items } : { kind: 'not_multi' };
+  return parseImplicitAmountPairs(text);
 }
