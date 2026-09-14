@@ -12,7 +12,15 @@ import {
 import { categorizeExpense, type CategorizationInput } from './category-categorizer.js';
 import { config } from './config.js';
 import { readEkasaReceiptQr } from './ekasa-qr.js';
-import { formatAmount, parseFinancialMessage } from './finance-parser.js';
+import { formatAmount, parseFinancialMessage, type ParsedTransaction } from './finance-parser.js';
+import { parseMultiExpenseMessage } from './multi-expense-parser.js';
+import {
+  batchCorrectionTarget,
+  batchTransactionCallbackData,
+  matchBatchTransactions,
+  parseBatchTransactionCallbackData,
+  type BatchTransactionCandidate,
+} from './multi-expense-correction.js';
 import { optimizeReceiptImage } from './receipt-image.js';
 import { supabase } from './supabase.js';
 import { downloadTelegramFile } from './telegram-files.js';
@@ -32,6 +40,7 @@ import {
 } from './receipt-purchase-protection-controls.js';
 
 type RpcResult = { transaction_id: string; workspace_id: string; was_duplicate: boolean };
+type BatchRpcResult = RpcResult & { item_index: number };
 type LastTransaction = {
   transaction_id: string;
   transaction_type: 'income' | 'expense' | 'transfer';
@@ -244,6 +253,14 @@ async function getCategoryCorrectionCategories(telegramUserId: string, transacti
   });
 }
 
+async function getLastTelegramBatchTransactions(telegramUserId: string): Promise<BatchTransactionCandidate[]> {
+  const { data, error } = await supabase.rpc('get_telegram_last_batch_transactions', {
+    p_telegram_user_id: telegramUserId,
+  });
+  if (error) throw new Error(error.message);
+  return (data as BatchTransactionCandidate[] | null) ?? [];
+}
+
 async function correctLastTransactionCategory(
   telegramUserId: string,
   transactionId: string,
@@ -268,6 +285,51 @@ async function showCategoryPicker(ctx: Context, last: LastTransaction, categorie
     keyboard.row();
   }
   await ctx.reply('Do ktorej kategórie zaradiť poslednú transakciu?\nVyberte kategóriu 👇', { reply_markup: keyboard });
+}
+
+function batchTransactionLabel(transaction: BatchTransactionCandidate): string {
+  const description = transaction.note?.trim() || transaction.merchant_name?.trim() || 'Výdavok';
+  return `${description} – ${formatAmount(transaction.amount_minor, transactionCurrency(transaction.currency_code))}`;
+}
+
+async function handleBatchCategoryCorrection(ctx: Context, text: string): Promise<boolean> {
+  if (!ctx.from) return false;
+  const target = batchCorrectionTarget(text);
+  if (!target) return false;
+
+  const telegramUserId = String(ctx.from.id);
+  const batch = await getLastTelegramBatchTransactions(telegramUserId);
+  if (batch.length === 0) return false;
+  const matches = matchBatchTransactions(target, batch);
+  if (matches.length === 0) {
+    await ctx.reply('V poslednom hromadnom zápise sa takáto položka nenašla.');
+    return true;
+  }
+  if (matches.length === 1) {
+    const transaction = matches[0];
+    const categories = await getCategoryCorrectionCategories(telegramUserId, transaction.transaction_id);
+    if (categories.length === 0) {
+      await ctx.reply('Pre tento zápis teraz nie je dostupná žiadna aktívna kategória.');
+      return true;
+    }
+    await showCategoryPicker(ctx, {
+      transaction_id: transaction.transaction_id,
+      transaction_type: 'expense',
+      amount_minor: transaction.amount_minor,
+      currency_code: transaction.currency_code,
+      category_name: null,
+      note: transaction.note,
+      occurred_at: '',
+    }, categories);
+    return true;
+  }
+
+  const keyboard = new InlineKeyboard();
+  for (const transaction of matches) {
+    keyboard.text(batchTransactionLabel(transaction).slice(0, 60), batchTransactionCallbackData(transaction.transaction_id)).row();
+  }
+  await ctx.reply('Našlo sa viac položiek. Vyberte položku, ktorej chcete zmeniť kategóriu:', { reply_markup: keyboard });
+  return true;
 }
 
 function categoryCorrectionConfirmation(result: CategoryCorrectionResult): string {
@@ -398,6 +460,55 @@ async function saveTransaction(ctx: Context, text: string, categorizationInput: 
   if (error) throw new Error(error.message);
   const result = (data as RpcResult[] | null)?.[0];
   return result ? { result, label: category.label, amount: parsed.amountMinor, currency: parsed.currencyCode } : null;
+}
+
+async function saveTransactionBatch(
+  ctx: Context,
+  items: ParsedTransaction[],
+): Promise<{ result: BatchRpcResult; note: string; label: string; amount: number; currency: 'EUR' | 'CZK' | 'USD' | 'GBP' | 'HUF' | 'PLN' }[] | null> {
+  if (!ctx.from || !ctx.message || !ctx.chat) return null;
+
+  const categorizedItems = await Promise.all(items.map(async (parsed) => {
+    const category = parsed.transactionType === 'expense'
+      ? await categorizeExpense({ telegramUserId: String(ctx.from!.id), messageText: parsed.note })
+      : { slug: parsed.categorySlug, label: parsed.categoryLabel, source: 'rule' as const, confidence: 1, reason: 'Income parser' };
+    return { parsed, category };
+  }));
+
+  const { data, error } = await supabase.rpc('record_telegram_transaction_batch', {
+    p_telegram_user_id: String(ctx.from.id),
+    p_display_name: name(ctx),
+    p_chat_id: String(ctx.chat.id),
+    p_message_id: String(ctx.message.message_id),
+    p_update_id: String(ctx.update.update_id),
+    p_message_text: ctx.message.text ?? '',
+    p_items: categorizedItems.map(({ parsed, category }) => ({
+      amount_minor: parsed.amountMinor,
+      currency_code: parsed.currencyCode,
+      transaction_type: parsed.transactionType,
+      category_slug: category.slug,
+      category_source: category.source === 'fallback' ? 'system' : category.source,
+      category_confidence: category.confidence,
+      category_reason: category.reason,
+      note: parsed.note,
+    })),
+    p_occurred_at: new Date(ctx.message.date * 1000).toISOString(),
+    p_time_zone: 'Europe/Bratislava',
+  });
+  if (error) throw new Error(error.message);
+  const results = (data as BatchRpcResult[] | null) ?? [];
+  if (results.length !== categorizedItems.length) throw new Error('Batch transaction RPC returned an incomplete result');
+  return categorizedItems.map(({ parsed, category }, index) => ({
+    result: results.find((row) => row.item_index === index) ?? (() => { throw new Error('Batch transaction result index is missing'); })(),
+    note: parsed.note,
+    label: category.label,
+    amount: parsed.amountMinor,
+    currency: parsed.currencyCode,
+  }));
+}
+
+function batchTransactionSummary(items: NonNullable<Awaited<ReturnType<typeof saveTransactionBatch>>>): string {
+  return `✅ Zapísané:\n${items.map((item) => `${item.note} — ${formatAmount(item.amount, item.currency)} — ${item.label}`).join('\n')}`;
 }
 
 function receiptPurchaseProtectionDecisionText(decision: ReceiptPurchaseProtectionDecision, keptReceipt: boolean): string {
@@ -666,6 +777,46 @@ export function createTelegramBot(): Bot {
     await ctx.answerCallbackQuery({ text: 'Zápis ostáva bez zmeny.' });
     try { await ctx.editMessageReplyMarkup({ reply_markup: undefined }); } catch { /* the original message may no longer be editable */ }
   });
+  bot.callbackQuery(/^txb:[0-9a-f-]{36}$/i, async (ctx) => {
+    if (!claimUpdate(ctx.update.update_id)) {
+      await ctx.answerCallbackQuery({ text: 'Toto kliknutie už bolo spracované.' });
+      return;
+    }
+    try {
+      await ctx.answerCallbackQuery();
+      if (!ctx.from) return;
+      const transactionId = parseBatchTransactionCallbackData(ctx.callbackQuery.data);
+      if (!transactionId) return;
+      const categories = await getCategoryCorrectionCategories(String(ctx.from.id), transactionId);
+      if (categories.length === 0) {
+        await ctx.reply('Tento výber položky už nie je platný. Napíšte, prosím, opravu kategórie znova.');
+        return;
+      }
+      const batch = await getLastTelegramBatchTransactions(String(ctx.from.id));
+      const transaction = batch.find((candidate) => candidate.transaction_id === transactionId);
+      if (!transaction) {
+        await ctx.reply('Tento výber položky už nie je platný. Napíšte, prosím, opravu kategórie znova.');
+        return;
+      }
+      try { await ctx.editMessageReplyMarkup({ reply_markup: undefined }); } catch { /* original message may no longer be editable */ }
+      await showCategoryPicker(ctx, {
+        transaction_id: transaction.transaction_id,
+        transaction_type: 'expense',
+        amount_minor: transaction.amount_minor,
+        currency_code: transaction.currency_code,
+        category_name: null,
+        note: transaction.note,
+        occurred_at: '',
+      }, categories);
+    } catch (error) {
+      console.error('Telegram batch transaction selection failed', {
+        updateId: ctx.update.update_id,
+        telegramUserId: ctx.from?.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      try { await ctx.reply('❌ Výber položky sa nepodarilo pripraviť. Skúste to, prosím, o chvíľu znova.'); } catch { /* update is already acknowledged */ }
+    }
+  });
   bot.callbackQuery(/^txc:([A-Za-z0-9_-]{22}):([A-Za-z0-9_-]{22})$/, async (ctx) => {
     if (!claimUpdate(ctx.update.update_id)) {
       await ctx.answerCallbackQuery({ text: 'Toto kliknutie už bolo spracované.' });
@@ -762,7 +913,8 @@ export function createTelegramBot(): Bot {
 
       if (isCategoryCorrectionRequest(text)) {
         try {
-          await handleCategoryCorrection(ctx, text);
+          const handledBatchCorrection = await handleBatchCategoryCorrection(ctx, text);
+          if (!handledBatchCorrection) await handleCategoryCorrection(ctx, text);
         } catch (error) {
           console.error('Telegram category correction request failed', {
             updateId: ctx.update.update_id,
@@ -829,6 +981,18 @@ export function createTelegramBot(): Bot {
         } else {
           await ctx.reply(report.caption, { parse_mode: 'HTML' });
         }
+        return;
+      }
+
+      const multiExpense = parseMultiExpenseMessage(text);
+      if (multiExpense.kind === 'invalid') {
+        await ctx.reply('Niektoré položky sa nepodarilo jednoznačne rozpoznať. Skúste ich oddeliť bodkočiarkou alebo každú napíšte na nový riadok.');
+        return;
+      }
+      if (multiExpense.kind === 'valid') {
+        const savedBatch = await saveTransactionBatch(ctx, multiExpense.items);
+        if (!savedBatch) throw new Error('Batch transaction could not be saved');
+        await ctx.reply(batchTransactionSummary(savedBatch));
         return;
       }
 

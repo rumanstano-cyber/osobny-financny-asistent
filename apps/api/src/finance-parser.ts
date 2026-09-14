@@ -11,8 +11,10 @@ function normalize(value: string): string {
   return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 }
 
+const amountPattern = String.raw`(?:€\s*)?(\d{1,12}(?:[\s.,]\d{1,2})?)\s*(€|eur|kč|czk|\$|usd|£|gbp|huf|ft|pln)?`;
+
 function extractAmount(input: string): { raw: string; currencyCode: ParsedTransaction['currencyCode']; minorUnit: number } | null {
-  const match = input.match(/(?:€\s*)?(\d{1,12}(?:[\s.,]\d{1,2})?)\s*(€|eur|kč|czk|\$|usd|£|gbp|huf|ft|pln)?/iu);
+  const match = input.match(new RegExp(amountPattern, 'iu'));
   if (!match) return null;
 
   const currencyToken = normalize(match[2] ?? '€');
@@ -28,6 +30,11 @@ function extractAmount(input: string): { raw: string; currencyCode: ParsedTransa
             ? { currencyCode: 'PLN' as const, minorUnit: 2 }
             : { currencyCode: 'EUR' as const, minorUnit: 2 };
   return { raw: match[1], ...currency };
+}
+
+/** Counts monetary expressions without changing the tolerant single-entry parser. */
+export function countFinancialAmounts(input: string): number {
+  return [...input.matchAll(new RegExp(amountPattern, 'giu'))].length;
 }
 
 function toMinorUnits(raw: string, minorUnit: number): number | null {
