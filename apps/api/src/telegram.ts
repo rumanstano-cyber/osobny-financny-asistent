@@ -13,6 +13,22 @@ import { categorizeExpense, type CategorizationInput } from './category-categori
 import { config } from './config.js';
 import { readEkasaReceiptQr } from './ekasa-qr.js';
 import { formatAmount, parseFinancialMessage, type ParsedTransaction } from './finance-parser.js';
+import { detectBudgetIntent, isBudgetStatusQuestion, parseStandaloneBudgetAmount } from './budget-intents.js';
+import {
+  budgetStatus,
+  cancelBudget,
+  claimBudgetAlert,
+  consumeBudgetAmountPending,
+  getBudgetCategories,
+  hasBudgetAmountPending,
+  maybeBudgetOffer,
+  setBudget,
+  setBudgetOfferPreference,
+  startBudgetAmountPending,
+  telegramBudgetContext,
+  type BudgetCategory,
+  type BudgetStatus,
+} from './budget-service.js';
 import { parseMultiExpenseMessage } from './multi-expense-parser.js';
 import {
   batchCorrectionTarget,
@@ -179,6 +195,112 @@ function claimCaption(receipt: ReceiptClaimMatch): string {
 
 function transactionCurrency(value: string): Parameters<typeof formatAmount>[1] {
   return value === 'CZK' || value === 'USD' || value === 'GBP' || value === 'HUF' || value === 'PLN' || value === 'EUR' ? value : 'EUR';
+}
+
+function normalizeBudgetText(value: string): string {
+  return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('sk-SK');
+}
+
+function budgetCategoryFromText(text: string, categories: BudgetCategory[]): BudgetCategory | null {
+  const normalized = normalizeBudgetText(text);
+  const matches = categories.filter((category) => {
+    const name = normalizeBudgetText(category.name);
+    return normalized.includes(name) || normalized.includes(category.slug.replace(/-/g, ' '));
+  });
+  return matches.length === 1 ? matches[0] : null;
+}
+
+async function resolveBudgetCategory(telegramUserId: string, text: string, categories: BudgetCategory[]): Promise<BudgetCategory | null> {
+  const direct = budgetCategoryFromText(text, categories);
+  if (direct) return direct;
+  const categorized = await categorizeExpense({ telegramUserId, messageText: text });
+  return categories.find((category) => category.slug === categorized.slug) ?? null;
+}
+
+function budgetStatusText(status: BudgetStatus): string {
+  const limit = formatAmount(status.amountMinor, transactionCurrency(status.currencyCode));
+  const spent = formatAmount(status.spentMinor, transactionCurrency(status.currencyCode));
+  if (status.remainingMinor < 0) return `⚠️ ${status.categoryName}: limit ${limit} je prekročený o ${formatAmount(Math.abs(status.remainingMinor), transactionCurrency(status.currencyCode))}.`;
+  return `${status.categoryName}: minuté ${spent} z ${limit}. Ostáva ${formatAmount(status.remainingMinor, transactionCurrency(status.currencyCode))}.`;
+}
+
+function budgetControls(categoryId: string): InlineKeyboard {
+  return new InlineKeyboard().text('Zmeniť limit', `bgc:${categoryId}`).text('Zrušiť limit', `bgx:${categoryId}`);
+}
+
+type BudgetFollowUp = { lines: string[]; offer: BudgetCategory | null };
+
+function budgetOfferKeyboard(category: BudgetCategory): InlineKeyboard {
+  return new InlineKeyboard().text('Áno, nastaviť limit', `bgo:${category.id}`).row().text('Neskôr', `bgl:${category.id}`).text('Už neponúkať', `bgn:${category.id}`);
+}
+
+async function budgetFollowUp(ctx: Context, categorySlug: string): Promise<BudgetFollowUp> {
+  if (!ctx.from) return { lines: [], offer: null };
+  const context = await telegramBudgetContext(String(ctx.from.id));
+  if (!context) return { lines: [], offer: null };
+  const category = (await getBudgetCategories(context)).find((item) => item.slug === categorySlug);
+  if (!category) return { lines: [], offer: null };
+  const status = await budgetStatus(context, category.id);
+  if (!status) {
+    const offer = await maybeBudgetOffer(context, category.id);
+    return { lines: [], offer: offer ? category : null };
+  }
+  const lines = [budgetStatusText(status)];
+  if (await claimBudgetAlert(context, status, 100)) lines.push(`⚠️ Mesačný limit pre ${status.categoryName} bol prekročený o ${formatAmount(Math.max(0, -status.remainingMinor), transactionCurrency(status.currencyCode))}.`);
+  else if (await claimBudgetAlert(context, status, 80)) lines.push(`⚠️ Limit pre ${status.categoryName} sa blíži k vyčerpaniu. Minuté ${formatAmount(status.spentMinor, transactionCurrency(status.currencyCode))} z ${formatAmount(status.amountMinor, transactionCurrency(status.currencyCode))}.`);
+  return { lines, offer: null };
+}
+
+async function sendBudgetOffer(ctx: Context, category: BudgetCategory): Promise<void> {
+  await ctx.reply(`Tento mesiac bolo v kategórii ${category.name} evidovaných viac výdavkov.\nChcete si nastaviť mesačný limit pre túto kategóriu?`, { reply_markup: budgetOfferKeyboard(category) });
+}
+
+async function handleBudgetTextIntent(ctx: Context, text: string): Promise<boolean> {
+  if (!ctx.from) return false;
+  const context = await telegramBudgetContext(String(ctx.from.id));
+  if (!context) return false;
+
+  const pendingAmount = parseStandaloneBudgetAmount(text);
+  if (pendingAmount) {
+    const saved = await consumeBudgetAmountPending(context, pendingAmount.amountMinor, pendingAmount.currencyCode);
+    if (saved) {
+      await ctx.reply(`✅ Hotovo. Mesačný limit pre ${saved.categoryName} je ${formatAmount(saved.amountMinor, transactionCurrency(saved.currencyCode))}.\n${budgetStatusText(saved)}`, { reply_markup: budgetControls(saved.categoryId) });
+      return true;
+    }
+  }
+  if (await hasBudgetAmountPending(context)) {
+    await ctx.reply('Bot čaká na sumu mesačného limitu. Napíšte ju napríklad ako 300 €.');
+    return true;
+  }
+
+  const intent = detectBudgetIntent(text) ?? (isBudgetStatusQuestion(text) ? 'status' : null);
+  if (!intent) return false;
+  const categories = await getBudgetCategories(context);
+  const category = await resolveBudgetCategory(String(ctx.from.id), text, categories);
+  if (!category) {
+    await ctx.reply('Kategóriu limitu sa nepodarilo jednoznačne rozpoznať. Napíšte napríklad: „Nastav limit na Potraviny 300 €“.');
+    return true;
+  }
+  if (intent === 'cancel') {
+    const cancelled = await cancelBudget(context, category.id);
+    await ctx.reply(cancelled ? `✅ Limit pre ${category.name} je zrušený.` : `Pre ${category.name} zatiaľ nie je nastavený mesačný limit.`);
+    return true;
+  }
+  if (intent === 'status') {
+    const status = await budgetStatus(context, category.id);
+    if (status) await ctx.reply(budgetStatusText(status), { reply_markup: budgetControls(category.id) });
+    else await ctx.reply(`Pre ${category.name} zatiaľ nie je nastavený mesačný limit.`, { reply_markup: new InlineKeyboard().text('Nastaviť limit', `bgs:${category.id}`) });
+    return true;
+  }
+  const parsed = parseFinancialMessage(text);
+  if (!parsed) {
+    await startBudgetAmountPending(context, category.id);
+    await ctx.reply(`Aký mesačný limit chcete nastaviť pre ${category.name}?\nNapíšte sumu, napr. 300 €.`);
+    return true;
+  }
+  const saved = await setBudget(context, category, parsed.amountMinor, parsed.currencyCode);
+  await ctx.reply(`✅ Hotovo. Mesačný limit pre ${category.name} je ${formatAmount(saved.amountMinor, transactionCurrency(saved.currencyCode))}.\n${budgetStatusText(saved)}`, { reply_markup: budgetControls(category.id) });
+  return true;
 }
 
 function lastTransactionLabel(transaction: LastTransaction): string {
@@ -449,7 +571,7 @@ function claimUpdate(updateId: number): boolean {
   return true;
 }
 
-async function saveTransaction(ctx: Context, text: string, categorizationInput: Omit<CategorizationInput, 'telegramUserId'> = {}): Promise<{ result: RpcResult; label: string; amount: number; currency: 'EUR' | 'CZK' | 'USD' | 'GBP' | 'HUF' | 'PLN' } | null> {
+async function saveTransaction(ctx: Context, text: string, categorizationInput: Omit<CategorizationInput, 'telegramUserId'> = {}): Promise<{ result: RpcResult; slug: string; label: string; amount: number; currency: 'EUR' | 'CZK' | 'USD' | 'GBP' | 'HUF' | 'PLN' } | null> {
   if (!ctx.from || !ctx.message || !ctx.chat) return null;
   const parsed = parseFinancialMessage(text);
   if (!parsed) return null;
@@ -459,13 +581,13 @@ async function saveTransaction(ctx: Context, text: string, categorizationInput: 
   const { data, error } = await supabase.rpc('record_telegram_transaction', { p_telegram_user_id: String(ctx.from.id), p_display_name: name(ctx), p_chat_id: String(ctx.chat.id), p_message_id: String(ctx.message.message_id), p_update_id: String(ctx.update.update_id), p_message_text: text, p_amount_minor: parsed.amountMinor, p_currency_code: parsed.currencyCode, p_transaction_type: parsed.transactionType, p_category_slug: category.slug, p_note: parsed.note, p_occurred_at: new Date(ctx.message.date * 1000).toISOString(), p_time_zone: 'Europe/Bratislava' });
   if (error) throw new Error(error.message);
   const result = (data as RpcResult[] | null)?.[0];
-  return result ? { result, label: category.label, amount: parsed.amountMinor, currency: parsed.currencyCode } : null;
+  return result ? { result, slug: category.slug, label: category.label, amount: parsed.amountMinor, currency: parsed.currencyCode } : null;
 }
 
 async function saveTransactionBatch(
   ctx: Context,
   items: ParsedTransaction[],
-): Promise<{ result: BatchRpcResult; note: string; label: string; amount: number; currency: 'EUR' | 'CZK' | 'USD' | 'GBP' | 'HUF' | 'PLN' }[] | null> {
+): Promise<{ result: BatchRpcResult; note: string; slug: string; label: string; amount: number; currency: 'EUR' | 'CZK' | 'USD' | 'GBP' | 'HUF' | 'PLN' }[] | null> {
   if (!ctx.from || !ctx.message || !ctx.chat) return null;
 
   const categorizedItems = await Promise.all(items.map(async (parsed) => {
@@ -501,6 +623,7 @@ async function saveTransactionBatch(
   return categorizedItems.map(({ parsed, category }, index) => ({
     result: results.find((row) => row.item_index === index) ?? (() => { throw new Error('Batch transaction result index is missing'); })(),
     note: parsed.note,
+    slug: category.slug,
     label: category.label,
     amount: parsed.amountMinor,
     currency: parsed.currencyCode,
@@ -777,6 +900,43 @@ export function createTelegramBot(): Bot {
     await ctx.answerCallbackQuery({ text: 'Zápis ostáva bez zmeny.' });
     try { await ctx.editMessageReplyMarkup({ reply_markup: undefined }); } catch { /* the original message may no longer be editable */ }
   });
+  bot.callbackQuery(/^bg([olncxs]):([0-9a-f-]{36})$/i, async (ctx) => {
+    if (!claimUpdate(ctx.update.update_id)) {
+      await ctx.answerCallbackQuery({ text: 'Toto kliknutie už bolo spracované.' });
+      return;
+    }
+    try {
+      await ctx.answerCallbackQuery();
+      if (!ctx.from) return;
+      const match = /^bg([olncxs]):([0-9a-f-]{36})$/i.exec(ctx.callbackQuery.data);
+      if (!match) return;
+      const context = await telegramBudgetContext(String(ctx.from.id));
+      if (!context) return;
+      const action = match[1];
+      const categoryId = match[2];
+      if (action === 'l') {
+        await setBudgetOfferPreference(context, 'later');
+        await ctx.reply('Rozumiem. Ponuka limitu sa zobrazí najskôr o 14 dní.');
+      } else if (action === 'n') {
+        await setBudgetOfferPreference(context, 'never');
+        await ctx.reply('Proaktívne ponuky limitov sú vypnuté. Limity je stále možné nastaviť správou.');
+      } else if (action === 'x') {
+        const cancelled = await cancelBudget(context, categoryId);
+        await ctx.reply(cancelled ? `✅ Limit pre ${cancelled.categoryName} je zrušený.` : 'Tento limit už nie je aktívny.');
+      } else {
+        const category = await startBudgetAmountPending(context, categoryId);
+        if (!category) {
+          await ctx.reply('Tento výber limitu už nie je platný. Skúste to, prosím, znova.');
+          return;
+        }
+        await ctx.reply(`Aký mesačný limit chcete nastaviť pre ${category.name}?\nNapíšte sumu, napr. 300 €.`);
+      }
+      try { await ctx.editMessageReplyMarkup({ reply_markup: undefined }); } catch { /* original message may no longer be editable */ }
+    } catch (error) {
+      console.error('Telegram budget callback failed', { updateId: ctx.update.update_id, telegramUserId: ctx.from?.id, error: error instanceof Error ? error.message : String(error) });
+      try { await ctx.reply('❌ Nastavenie limitu sa nepodarilo zmeniť. Skúste to, prosím, o chvíľu znova.'); } catch { /* update is already acknowledged */ }
+    }
+  });
   bot.callbackQuery(/^txb:[0-9a-f-]{36}$/i, async (ctx) => {
     if (!claimUpdate(ctx.update.update_id)) {
       await ctx.answerCallbackQuery({ text: 'Toto kliknutie už bolo spracované.' });
@@ -926,6 +1086,8 @@ export function createTelegramBot(): Bot {
         return;
       }
 
+      if (await handleBudgetTextIntent(ctx, text)) return;
+
       if (/^oprav\b/iu.test(text.trim())) {
         const replacement = correctionText(text);
         if (!replacement) {
@@ -992,12 +1154,20 @@ export function createTelegramBot(): Bot {
       if (multiExpense.kind === 'valid') {
         const savedBatch = await saveTransactionBatch(ctx, multiExpense.items);
         if (!savedBatch) throw new Error('Batch transaction could not be saved');
-        await ctx.reply(batchTransactionSummary(savedBatch));
+        const budgetFollowUps = await Promise.all([...new Set(savedBatch.map((item) => item.slug))].map((slug) => budgetFollowUp(ctx, slug)));
+        await ctx.reply([batchTransactionSummary(savedBatch), ...budgetFollowUps.flatMap((followUp) => followUp.lines)].join('\n'));
+        for (const offer of budgetFollowUps.map((followUp) => followUp.offer).filter((value): value is BudgetCategory => Boolean(value))) await sendBudgetOffer(ctx, offer);
         return;
       }
 
       const saved = await saveTransaction(ctx, text);
-      await ctx.reply(saved ? `✅ Zapísané: ${saved.label} – ${formatAmount(saved.amount, saved.currency)}` : 'Sumu sa nepodarilo rozpoznať. Skúste napríklad: Káva 3 €');
+      if (!saved) {
+        await ctx.reply('Sumu sa nepodarilo rozpoznať. Skúste napríklad: Káva 3 €');
+        return;
+      }
+      const budgetFollowUpResult = await budgetFollowUp(ctx, saved.slug);
+      await ctx.reply([`✅ Zapísané: ${saved.label} – ${formatAmount(saved.amount, saved.currency)}`, ...budgetFollowUpResult.lines].join('\n'));
+      if (budgetFollowUpResult.offer) await sendBudgetOffer(ctx, budgetFollowUpResult.offer);
     } catch (error) {
       // The webhook has already been acknowledged; log failures without allowing
       // them to escape middleware and trigger a Telegram redelivery.

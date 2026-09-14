@@ -16,3 +16,13 @@ Architektonické rozhodnutia a produktová špecifikácia sú v [PROJECT.md](./P
 Pre nasadenie vytvor súkromný Supabase Storage bucket migráciou `20260804010000_create_receipts_bucket.sql`. Webhook sa nastavuje až po nasadení backendu na verejnú HTTPS URL.
 
 Overenie: `GET /health` musí odpovedať `{"status":"ok"}`. Po správe `Káva 3 €` bot odpovie `✅ Zapísané: Káva – 3,00 €` a uloží používateľa, osobný workspace, Telegram správu, transakciu, kategóriu a auditnú udalosť.
+
+## Mesačné limity podľa kategórie
+
+Limity sa nastavujú priamo v Telegrame, napríklad: `Nastav limit na Potraviny 300 €`. Bot po každom relevantnom zápise zobrazí minutú aj zostávajúcu sumu. Pri prvom dosiahnutí 80 % a 100 % limitu v mesiaci pošle jedno upozornenie.
+
+- Zmena: `Zmeň limit na Potraviny na 350 €`
+- Zrušenie: `Zruš limit na Potraviny`
+- Stav: `Koľko mi ostáva na potraviny?`
+
+Pri častejších výdavkoch môže bot nenásilne ponúknuť nastavenie limitu. Tlačidlo **Neskôr** ponuku odloží na 14 dní a **Už neponúkať** vypne iba proaktívne ponuky; ručné nastavenie limitu zostáva vždy dostupné.

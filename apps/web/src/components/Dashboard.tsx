@@ -14,6 +14,7 @@ type Transaction = {
   transaction_category_assignments: Array<{ categories: { name: string } | null }> | null;
 };
 type Receipt = { id: string; merchant_name: string | null; receipt_date: string | null; total_amount_minor: number | null; currency_code: string | null };
+type Budget = { id: string; amount_minor: number; currency_code: string; categories: { name: string } | { name: string }[] | null };
 type DashboardSummary = {
   income_minor: number;
   expense_minor: number;
@@ -40,6 +41,7 @@ export function Dashboard({ session }: { session: Session }) {
   const [workspaceId, setWorkspaceId] = useState('');
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [receipts, setReceipts] = useState<Receipt[]>([]);
+  const [budgets, setBudgets] = useState<Budget[]>([]);
   const [receiptCount, setReceiptCount] = useState(0);
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [telegramLinked, setTelegramLinked] = useState(false);
@@ -72,11 +74,12 @@ export function Dashboard({ session }: { session: Session }) {
       if (!selectedWorkspaceId) {
         setTransactions([]);
         setReceipts([]);
+        setBudgets([]);
         setReceiptCount(0);
         return;
       }
 
-      const [transactionResult, receiptResult, summaryResult] = await Promise.all([
+      const [transactionResult, receiptResult, summaryResult, budgetResult] = await Promise.all([
         supabase
         .from('financial_transactions')
         .select('id, transaction_type, amount_minor, currency_code, occurred_at, merchant_name, note, transaction_category_assignments!left(categories!inner(name))')
@@ -93,10 +96,13 @@ export function Dashboard({ session }: { session: Session }) {
           .order('created_at', { ascending: false })
           .limit(4),
         (supabase as unknown as DashboardRpcClient).rpc('get_current_workspace_dashboard_summary', { p_workspace_id: selectedWorkspaceId }),
+        supabase.from('budgets').select('id, amount_minor, currency_code, categories!inner(name)')
+          .eq('workspace_id', selectedWorkspaceId).eq('period', 'monthly').eq('is_active', true).is('deleted_at', null),
       ]);
       if (transactionResult.error) throw transactionResult.error;
       if (receiptResult.error) throw receiptResult.error;
       if (summaryResult.error) throw summaryResult.error;
+      if (budgetResult.error) throw budgetResult.error;
       setTransactions((transactionResult.data ?? []) as unknown as Transaction[]);
       setReceipts((receiptResult.data ?? []) as Receipt[]);
       const summaryRow = Array.isArray(summaryResult.data) ? summaryResult.data[0] : null;
@@ -108,6 +114,7 @@ export function Dashboard({ session }: { session: Session }) {
         categories: Array.isArray(summaryRow.categories) ? summaryRow.categories.map((item: { name?: unknown; amount_minor?: unknown }) => ({ name: String(item.name), amount_minor: Number(item.amount_minor) })) : [],
       } : null);
       setReceiptCount(summaryRow ? Number(summaryRow.receipt_count) : 0);
+      setBudgets((budgetResult.data ?? []) as unknown as Budget[]);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'Dáta sa nepodarilo načítať.');
     } finally {
@@ -127,6 +134,13 @@ export function Dashboard({ session }: { session: Session }) {
       categories: summary?.categories.slice(0, 5) ?? [],
     };
   }, [summary, workspaceId, workspaces]);
+
+  const displayBudgets = useMemo(() => budgets.map((budget) => {
+    const category = Array.isArray(budget.categories) ? budget.categories[0] : budget.categories;
+    const spent = summary?.categories.find((item) => item.name === category?.name)?.amount_minor ?? 0;
+    const remaining = Number(budget.amount_minor) - spent;
+    return { id: budget.id, category: category?.name ?? 'Kategória', amount: Number(budget.amount_minor), spent, remaining, currency: budget.currency_code };
+  }), [budgets, summary]);
 
   async function createPairingCode() {
     setError('');
@@ -170,6 +184,11 @@ export function Dashboard({ session }: { session: Session }) {
         <section className="content-card" aria-labelledby="category-heading">
           <div className="section-heading"><h2 id="category-heading">Kategórie výdavkov</h2><span>tento mesiac</span></div>
           {displaySummary.categories.length ? <ul className="category-list">{displaySummary.categories.map((category) => <li key={category.name}><span>{category.name}</span><strong>{formatMoney(category.amount_minor, displaySummary.currency)}</strong></li>)}</ul> : <p className="empty">Zatiaľ nemáte žiadne výdavky za tento mesiac.</p>}
+        </section>
+
+        <section className="content-card" aria-labelledby="budget-heading">
+          <div className="section-heading"><h2 id="budget-heading">Mesačné limity</h2><span>nastavené v Telegrame</span></div>
+          {displayBudgets.length ? <ul className="category-list">{displayBudgets.map((budget) => <li key={budget.id}><span>{budget.category}<small>{formatMoney(budget.spent, budget.currency)} z {formatMoney(budget.amount, budget.currency)} · {budget.remaining >= 0 ? `ostáva ${formatMoney(budget.remaining, budget.currency)}` : `prekročené o ${formatMoney(Math.abs(budget.remaining), budget.currency)}`}</small></span><strong>{Math.min(999, Math.round((budget.spent / budget.amount) * 100))} %</strong></li>)}</ul> : <p className="empty">Mesačný limit nastavíte priamo v Telegrame, napríklad: „Nastav limit na Potraviny 300 €“.</p>}
         </section>
 
         <section className="content-card" aria-labelledby="transaction-heading">
