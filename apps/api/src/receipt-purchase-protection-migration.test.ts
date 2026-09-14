@@ -68,7 +68,7 @@ test('Telegram asks after successful receipt processing and production cron invo
 
 test('successful warranty confirmation invites the user to share a longer warranty without changing the callback flow', () => {
   assert.match(telegram, /Doklad je uložený a záruku sledujeme 2 roky/u);
-  assert.match(telegram, /Ak máte dlhšiu záruku, napíšte mi jej dĺžku\./u);
+  assert.match(telegram, /Ak máte dlhšiu záruku, napíšte jej dĺžku\./u);
   assert.match(telegram, /receiptPurchaseProtectionCallbackData\(receipt\.id, true\)/u);
   assert.match(telegram, /receiptPurchaseProtectionCallbackData\(receipt\.id, false\)/u);
 });

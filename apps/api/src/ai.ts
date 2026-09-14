@@ -58,15 +58,15 @@ export function describeReceiptOcrFailure(error: unknown): ReceiptOcrFailure {
     return { ...details, code: 'model', userMessage: 'OCR bločkov zlyhalo: model gpt-4o-mini nie je dostupný pre tento OpenAI účet.' };
   }
   if (details.status === 429 || details.providerCode === 'insufficient_quota' || /rate limit|quota/i.test(message)) {
-    return { ...details, code: 'quota', userMessage: 'OCR bločkov je dočasne nedostupné: OpenAI účet dosiahol limit alebo kvótu. Skús to neskôr.' };
+    return { ...details, code: 'quota', userMessage: 'OCR bločkov je dočasne nedostupné: OpenAI účet dosiahol limit alebo kvótu. Skúste to neskôr.' };
   }
   if (normalizedMessage.includes('timeout') || normalizedMessage.includes('timed out') || normalizedMessage.includes('connection')) {
-    return { ...details, code: 'timeout', userMessage: 'OCR bločkov vypršalo pri čakaní na OpenAI. Skús prosím fotku odoslať znova.' };
+    return { ...details, code: 'timeout', userMessage: 'OCR bločkov vypršalo pri čakaní na OpenAI. Skúste, prosím, fotku odoslať znova.' };
   }
   if (details.status === 400 || details.status === 413 || details.status === 415) {
-    return { ...details, code: 'input', userMessage: `OCR bločkov odmietlo fotku (HTTP ${details.status}). Skús odoslať ostrú fotografiu vo formáte JPG alebo PNG.` };
+    return { ...details, code: 'input', userMessage: `OCR bločkov odmietlo fotku (HTTP ${details.status}). Skúste odoslať ostrú fotografiu vo formáte JPG alebo PNG.` };
   }
-  return { ...details, code: 'provider', userMessage: 'OCR bločkov sa nepodarilo dokončiť pre chybu služby OpenAI. Skús to prosím o chvíľu znova.' };
+  return { ...details, code: 'provider', userMessage: 'OCR bločkov sa nepodarilo dokončiť pre chybu služby OpenAI. Skúste to, prosím, o chvíľu znova.' };
 }
 
 export async function transcribeVoice(audio: Buffer, fileName: string): Promise<string> {
@@ -217,7 +217,7 @@ export async function extractReceipt(image: Buffer, mimeType: string): Promise<R
 }
 
 export async function monthlyCommentary(summary: string): Promise<string> {
-  const result = await requireClient().chat.completions.create({ model: 'gpt-4o-mini', messages: [{ role: 'system', content: 'You are a cautious personal-finance assistant. Write a short Slovak summary, never investment advice.' }, { role: 'user', content: summary }] });
+  const result = await requireClient().chat.completions.create({ model: 'gpt-4o-mini', messages: [{ role: 'system', content: 'You are a cautious personal-finance assistant. Write a short Slovak summary using only gender-neutral wording. Never use gendered second-person phrasing and never give investment advice.' }, { role: 'user', content: summary }] });
   return result.choices[0]?.message.content?.trim() ?? '';
 }
 
@@ -225,7 +225,7 @@ export async function monthlyReportCommentary(summary: string): Promise<string> 
   const result = await requireClient().chat.completions.create({
     model: 'gpt-4o-mini',
     messages: [
-      { role: 'system', content: 'Si opatrný osobný finančný asistent. Odpovedz presne dvoma stručnými vetami po slovensky: jedna veta zhodnotí výdavky a druhá ponúkne neinvestičné praktické odporúčanie. Nevymýšľaj čísla ani neposkytuj investičné poradenstvo.' },
+      { role: 'system', content: 'Si opatrný osobný finančný asistent. Odpovedz presne dvoma stručnými vetami po slovensky: jedna veta zhodnotí výdavky a druhá ponúkne neinvestičné praktické odporúčanie. Používaj výhradne rodovo neutrálne formulácie a neoslovuj používateľa v mužskom ani ženskom rode. Nevymýšľaj čísla ani neposkytuj investičné poradenstvo.' },
       { role: 'user', content: summary },
     ],
   });

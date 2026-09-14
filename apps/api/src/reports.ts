@@ -450,7 +450,7 @@ export async function sendMonthlyReports(
       const previousReport = await buildMonthlyReport(workspace.id, workspace.base_currency_code, previousReferenceDate);
       const numbers = reportNumbers(report, previousReport.expenseMinor);
       let commentary: string;
-      try { commentary = await monthlyReportCommentary(numbers); } catch { commentary = 'Prehľad je pripravený. Sleduj najväčšie kategórie výdavkov v ďalšom mesiaci.'; }
+      try { commentary = await monthlyReportCommentary(numbers); } catch { commentary = 'Prehľad je pripravený. Odporúča sa sledovať najväčšie kategórie výdavkov v ďalšom mesiaci.'; }
       const chartUrl = quickChartUrl(report);
       // A successful channel is persisted independently. On a later retry it
       // must remain successful even when there is nothing left to send.
@@ -509,8 +509,8 @@ function weeklyTelegramCaption(report: MonthlyReport): string {
   const balancePrefix = report.balanceMinor > 0 ? '+' : report.balanceMinor < 0 ? '-' : '';
   const topCategory = report.categories[0];
   const insight = topCategory
-    ? `Najviac si minul na <b>${htmlEscape(topCategory.name)}</b>.`
-    : 'Tento týždeň zatiaľ nemáš žiadne výdavky.';
+    ? `Najviac výdavkov bolo na <b>${htmlEscape(topCategory.name)}</b>.`
+    : 'Za tento týždeň zatiaľ nie sú evidované žiadne výdavky.';
   return [
     '📅 <b>Týždenný prehľad</b>',
     `🟢 <b>Príjmy: +${htmlEscape(formatCurrency(report.incomeMinor, report.currencyCode))}</b>`,
@@ -592,11 +592,11 @@ export async function sendWeeklyReports(bot: Bot, referenceDate = new Date()): P
 
 async function loadCurrentMonthReport(telegramUserId: string): Promise<CurrentMonthReportLookup> {
   const { data: account } = await supabase.from('channel_accounts').select('user_id').eq('channel', 'telegram').eq('external_account_id', telegramUserId).is('unlinked_at', null).single();
-  if (!account) return { report: null, unavailableMessage: 'Zatiaľ nemáš žiadne uložené transakcie.' };
+  if (!account) return { report: null, unavailableMessage: 'Zatiaľ nie sú k dispozícii žiadne uložené transakcie.' };
   const { data: membership } = await supabase.from('workspace_members').select('workspace_id').eq('user_id', account.user_id).eq('status', 'active').limit(1).single();
-  if (!membership) return { report: null, unavailableMessage: 'Nenašiel som finančný priestor.' };
+  if (!membership) return { report: null, unavailableMessage: 'Finančný priestor sa nepodarilo nájsť.' };
   const { data: workspace } = await supabase.from('workspaces').select('base_currency_code').eq('id', membership.workspace_id).is('deleted_at', null).single();
-  if (!workspace) return { report: null, unavailableMessage: 'Nenašiel som finančný priestor.' };
+  if (!workspace) return { report: null, unavailableMessage: 'Finančný priestor sa nepodarilo nájsť.' };
   const report = await buildMonthlyReport(membership.workspace_id, workspace.base_currency_code);
   return { report, unavailableMessage: null };
 }
@@ -617,7 +617,7 @@ export async function currentMonthVisualReport(telegramUserId: string): Promise<
 
   const summary = reportNumbers(lookup.report);
   let commentary = '';
-  try { commentary = await monthlyCommentary(summary); } catch { commentary = 'Prehľad je pripravený. Sleduj najväčšie kategórie výdavkov.'; }
+  try { commentary = await monthlyCommentary(summary); } catch { commentary = 'Prehľad je pripravený. Odporúča sa sledovať najväčšie kategórie výdavkov.'; }
   return {
     chartUrl: lookup.report.categories.length > 0 ? quickChartUrl(lookup.report) : null,
     caption: telegramCaption(lookup.report, commentary),

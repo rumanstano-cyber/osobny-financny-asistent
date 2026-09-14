@@ -203,7 +203,7 @@ async function requestLastTransactionVoid(ctx: Context): Promise<void> {
   const keyboard = new InlineKeyboard()
     .text('Áno, zrušiť', `txn:void:${last.transaction_id}`)
     .text('Ponechať', 'txn:keep');
-  await ctx.reply(`⚠️ Naozaj chceš zrušiť posledný zápis?\n${lastTransactionLabel(last)}`, { reply_markup: keyboard });
+  await ctx.reply(`⚠️ Naozaj chcete zrušiť posledný zápis?\n${lastTransactionLabel(last)}`, { reply_markup: keyboard });
 }
 
 async function correctLastTransaction(telegramUserId: string, text: string, categorizationInput: Omit<CategorizationInput, 'telegramUserId'> = {}): Promise<CorrectedTransaction | null> {
@@ -267,7 +267,7 @@ async function showCategoryPicker(ctx: Context, last: LastTransaction, categorie
     }
     keyboard.row();
   }
-  await ctx.reply('Kam mám zaradiť poslednú transakciu?\nVyber kategóriu 👇', { reply_markup: keyboard });
+  await ctx.reply('Do ktorej kategórie zaradiť poslednú transakciu?\nVyberte kategóriu 👇', { reply_markup: keyboard });
 }
 
 function categoryCorrectionConfirmation(result: CategoryCorrectionResult): string {
@@ -307,7 +307,7 @@ async function handleCategoryCorrection(ctx: Context, text: string): Promise<voi
 
   const corrected = await correctLastTransactionCategory(telegramUserId, last.transaction_id, category.id);
   if (!corrected) {
-    await ctx.reply('Posledný zápis sa medzitým zmenil. Napíš, prosím, opravu kategórie ešte raz.');
+    await ctx.reply('Posledný zápis sa medzitým zmenil. Napíšte, prosím, opravu kategórie ešte raz.');
     return;
   }
   await ctx.reply(categoryCorrectionConfirmation(corrected));
@@ -355,11 +355,11 @@ async function handleReceiptClaimSearch(ctx: Context, query: string): Promise<vo
   if (!ctx.from) return;
   const matches = await findReceiptClaims(String(ctx.from.id), query);
   if (!matches.length) {
-    await ctx.reply(`Bloček k „${query}“ sa nenašiel. Skús názov obchodu alebo položky z dokladu.`);
+    await ctx.reply(`Bloček k „${query}“ sa nenašiel. Skúste názov obchodu alebo položky z dokladu.`);
     return;
   }
   if (matches.length === 1) {
-    await ctx.reply('✅ Bloček bol nájdený. Posielam jeho pôvodnú fotografiu.');
+    await ctx.reply('✅ Bloček bol nájdený. Pôvodná fotografia bločku je priložená.');
     await sendReceiptForClaim(ctx, matches[0]);
     return;
   }
@@ -371,7 +371,7 @@ async function handleReceiptClaimSearch(ctx: Context, query: string): Promise<vo
     const amount = receipt.total_amount_minor === null ? '' : ` · ${formatAmount(receipt.total_amount_minor, claimCurrency(receipt.currency_code))}`;
     keyboard.text(`${merchant} · ${date}${amount}`.slice(0, 60), `claim:${receipt.receipt_id}`).row();
   }
-  await ctx.reply(`Našlo sa ${matches.length} bločkov. Vyber správny doklad pre reklamáciu:`, { reply_markup: keyboard });
+  await ctx.reply(`Našlo sa ${matches.length} bločkov. Vyberte správny doklad pre reklamáciu:`, { reply_markup: keyboard });
 }
 
 function claimUpdate(updateId: number): boolean {
@@ -403,7 +403,7 @@ async function saveTransaction(ctx: Context, text: string, categorizationInput: 
 function receiptPurchaseProtectionDecisionText(decision: ReceiptPurchaseProtectionDecision, keptReceipt: boolean): string {
   if (decision.archive_status === 'archived') {
     if (decision.protection_status === 'active' && decision.protection_ends_on) {
-      return '✅ Doklad je uložený a záruku sledujeme 2 roky. Ak máte dlhšiu záruku, napíšte mi jej dĺžku.';
+      return '✅ Doklad je uložený a záruku sledujeme 2 roky. Ak máte dlhšiu záruku, napíšte jej dĺžku.';
     }
     return '✅ Doklad je uložený. Sledovanie sa nespustilo, pretože súvisiaci finančný záznam už bol zrušený.';
   }
@@ -427,7 +427,7 @@ async function handleReceipt(ctx: Context): Promise<void> {
   let stage = 'príprava spracovania';
 
   try {
-    await ctx.reply('🔎 Čítam bloček…');
+    await ctx.reply('🔎 Bloček sa spracúva…');
     stage = 'stiahnutie fotky z Telegramu';
     const file = await downloadTelegramFile(photo.file_id);
     stage = 'kompresia fotky';
@@ -460,7 +460,7 @@ async function handleReceipt(ctx: Context): Promise<void> {
     }
 
     if (!extraction.amountMinor) {
-      await ctx.reply('Bloček sa uložil, no sumu sa nepodarilo spoľahlivo nájsť. Skús prosím ostrejšiu fotku.');
+      await ctx.reply('Bloček sa uložil, no sumu sa nepodarilo spoľahlivo nájsť. Skúste, prosím, ostrejšiu fotku.');
       return;
     }
     stage = 'uloženie finančnej transakcie';
@@ -517,7 +517,7 @@ async function handleReceipt(ctx: Context): Promise<void> {
 
     const message = stage === 'OpenAI Vision OCR'
       ? describeReceiptOcrFailure(error).userMessage
-      : `Spracovanie bločku zlyhalo pri fáze: ${stage}. Skús to prosím znova.`;
+      : `Spracovanie bločku zlyhalo pri fáze: ${stage}. Skúste to, prosím, znova.`;
     try {
       await ctx.reply(`❌ ${message}`);
     } catch (replyError) {
@@ -528,7 +528,7 @@ async function handleReceipt(ctx: Context): Promise<void> {
 }
 
 async function handleVoice(ctx: Context, fileId: string): Promise<void> {
-  await ctx.reply('🎙️ Prepisujem správu…');
+  await ctx.reply('🎙️ Hlasová správa sa prepisuje…');
   const audio = await downloadTelegramFile(fileId);
   const text = await transcribeVoice(audio.bytes, audio.path);
   if (isCancelLastTransactionRequest(text)) {
@@ -558,14 +558,14 @@ export async function processQueuedTelegramMedia(bot: Bot, payload: TelegramMedi
 export function createTelegramBot(): Bot {
   const bot = new Bot(config.TELEGRAM_BOT_TOKEN);
   bot.command('start', async (ctx) => {
-    await ctx.reply('Ahoj! Pošli „Káva 3 €“, hlasovú správu alebo fotku bločku. E-mail teraz nepotrebuješ.');
+    await ctx.reply('Ahoj! Pošlite „Káva 3 €“, hlasovú správu alebo fotku bločku. E-mail zatiaľ nie je potrebný.');
   });
   bot.command('link', async (ctx) => {
     if (!ctx.from) return;
     try {
       const code = ctx.match.trim();
       if (!code) {
-        await ctx.reply('Vygeneruj si párovací kód vo webovom prehľade a pošli mi: /link TVOJ_KÓD');
+        await ctx.reply('Vygenerujte párovací kód vo webovom prehľade a pošlite: /link TVOJ_KÓD');
         return;
       }
       const { error } = await supabase.rpc('consume_telegram_link_code', {
@@ -580,7 +580,7 @@ export function createTelegramBot(): Bot {
         telegramUserId: ctx.from.id,
         error: error instanceof Error ? error.message : String(error),
       });
-      await ctx.reply('Párovací kód je neplatný alebo už vypršal. Vygeneruj nový kód vo webovom prehľade.');
+      await ctx.reply('Párovací kód je neplatný alebo už vypršal. Vygenerujte nový kód vo webovom prehľade.');
     }
   });
   bot.callbackQuery(/^claim:([0-9a-f-]{36})$/i, async (ctx) => {
@@ -590,7 +590,7 @@ export function createTelegramBot(): Bot {
       if (ctx.chat?.type !== 'private' || !ctx.from) return;
       const receipt = await getReceiptClaim(String(ctx.from.id), ctx.match[1]);
       if (!receipt) {
-        await ctx.reply('Tento bloček už nie je dostupný alebo k nemu nemáš prístup. Skús vyhľadávanie znova.');
+        await ctx.reply('Tento bloček už nie je dostupný alebo k nemu nemáte prístup. Skúste vyhľadávanie znova.');
         return;
       }
       await sendReceiptForClaim(ctx, receipt);
@@ -600,7 +600,7 @@ export function createTelegramBot(): Bot {
         telegramUserId: ctx.from?.id,
         error: error instanceof Error ? error.message : String(error),
       });
-      try { await ctx.reply('❌ Bloček sa nepodarilo odoslať. Skús výber zopakovať o chvíľu.'); } catch { /* update is already acknowledged */ }
+      try { await ctx.reply('❌ Bloček sa nepodarilo odoslať. Skúste výber zopakovať o chvíľu.'); } catch { /* update is already acknowledged */ }
     }
   });
   bot.callbackQuery(/^rpp:[0-9a-f-]{36}:[yn]$/i, async (ctx) => {
@@ -631,7 +631,7 @@ export function createTelegramBot(): Bot {
         telegramUserId: ctx.from?.id,
         error: error instanceof Error ? error.message : String(error),
       });
-      try { await ctx.reply('❌ Nastavenie uloženia dokladu sa nepodarilo zmeniť. Skús to prosím o chvíľu znova.'); } catch { /* update is already acknowledged */ }
+      try { await ctx.reply('❌ Nastavenie uloženia dokladu sa nepodarilo zmeniť. Skúste to, prosím, o chvíľu znova.'); } catch { /* update is already acknowledged */ }
     }
   });
   bot.callbackQuery(/^txn:void:([0-9a-f-]{36})$/i, async (ctx) => {
@@ -658,7 +658,7 @@ export function createTelegramBot(): Bot {
         telegramUserId: ctx.from?.id,
         error: error instanceof Error ? error.message : String(error),
       });
-      try { await ctx.reply('❌ Zápis sa nepodarilo zrušiť. Skús to prosím o chvíľu znova.'); } catch { /* update is already acknowledged */ }
+      try { await ctx.reply('❌ Zápis sa nepodarilo zrušiť. Skúste to, prosím, o chvíľu znova.'); } catch { /* update is already acknowledged */ }
     }
   });
   bot.callbackQuery(/^txn:keep$/i, async (ctx) => {
@@ -676,7 +676,7 @@ export function createTelegramBot(): Bot {
       if (!ctx.from) return;
       const callback = parseCategoryCallbackData(ctx.callbackQuery.data);
       if (!callback) {
-        await ctx.reply('Tento výber kategórie už nie je platný. Napíš, prosím, „oprav kategóriu“ znova.');
+        await ctx.reply('Tento výber kategórie už nie je platný. Napíšte, prosím, „oprav kategóriu“ znova.');
         return;
       }
       console.info('Telegram category correction selected', {
@@ -687,7 +687,7 @@ export function createTelegramBot(): Bot {
       });
       const corrected = await correctLastTransactionCategory(String(ctx.from.id), callback.transactionId, callback.categoryId);
       if (!corrected) {
-        await ctx.reply('Posledný zápis sa medzitým zmenil. Napíš, prosím, opravu kategórie ešte raz.');
+        await ctx.reply('Posledný zápis sa medzitým zmenil. Napíšte, prosím, opravu kategórie ešte raz.');
         return;
       }
       try { await ctx.editMessageReplyMarkup({ reply_markup: undefined }); } catch { /* the original message may no longer be editable */ }
@@ -698,7 +698,7 @@ export function createTelegramBot(): Bot {
         telegramUserId: ctx.from?.id,
         error: error instanceof Error ? error.message : String(error),
       });
-      try { await ctx.reply('❌ Kategóriu sa nepodarilo zmeniť. Skús to prosím o chvíľu znova.'); } catch { /* update is already acknowledged */ }
+      try { await ctx.reply('❌ Kategóriu sa nepodarilo zmeniť. Skúste to, prosím, o chvíľu znova.'); } catch { /* update is already acknowledged */ }
     }
   });
   bot.on('message', async (ctx) => {
@@ -736,7 +736,7 @@ export function createTelegramBot(): Bot {
 
       const text = ctx.message.text;
       if (!text) {
-        await ctx.reply('Podporujem textové správy, hlasové správy a fotky bločkov.');
+        await ctx.reply('Podporované sú textové správy, hlasové správy a fotky bločkov.');
         return;
       }
 
@@ -769,7 +769,7 @@ export function createTelegramBot(): Bot {
             telegramUserId: ctx.from.id,
             error: error instanceof Error ? error.message : String(error),
           });
-          await ctx.reply('❌ Opravu kategórie sa nepodarilo pripraviť. Skús to prosím o chvíľu znova.');
+          await ctx.reply('❌ Opravu kategórie sa nepodarilo pripraviť. Skúste to, prosím, o chvíľu znova.');
         }
         return;
       }
@@ -779,13 +779,13 @@ export function createTelegramBot(): Bot {
         if (!replacement) {
           const last = await getLastTransaction(String(ctx.from.id));
           await ctx.reply(last
-            ? `Posledný zápis je: ${lastTransactionLabel(last)}\n\nNapíš napríklad: <code>oprav posledný zápis na Obed 8,50 €</code>`
+            ? `Posledný zápis je: ${lastTransactionLabel(last)}\n\nNapíšte napríklad: <code>oprav posledný zápis na Obed 8,50 €</code>`
             : 'Zatiaľ nie je k dispozícii žiadny potvrdený zápis na opravu.', { parse_mode: 'HTML' });
           return;
         }
         const corrected = await correctLastTransaction(String(ctx.from.id), replacement);
         if (!corrected) {
-          await ctx.reply('Opravu sa nepodarilo rozpoznať alebo nie je k dispozícii žiadny potvrdený zápis. Skús napríklad: „oprav posledný zápis na Obed 8,50 €“.');
+          await ctx.reply('Opravu sa nepodarilo rozpoznať alebo nie je k dispozícii žiadny potvrdený zápis. Skúste napríklad: „oprav posledný zápis na Obed 8,50 €“.');
           return;
         }
         await ctx.reply(`✏️ Opravené: ${corrected.category_name ?? 'Výdavok'} – ${formatAmount(corrected.amount_minor, transactionCurrency(corrected.currency_code))}${corrected.note?.trim() ? ` (${corrected.note.trim()})` : ''}`);
@@ -800,7 +800,7 @@ export function createTelegramBot(): Bot {
       if (isReceiptClaimRequest(text)) {
         const query = receiptClaimQuery(text);
         if (!query) {
-          await ctx.reply('Napíš, prosím, čo hľadáš. Napríklad: „reklamácia Lidl“ alebo „potrebujem bloček za kávu“.');
+          await ctx.reply('Napíšte, prosím, čo hľadáte. Napríklad: „reklamácia Lidl“ alebo „potrebujem bloček za kávu“.');
           return;
         }
         try {
@@ -812,13 +812,13 @@ export function createTelegramBot(): Bot {
             query,
             error: claimError instanceof Error ? claimError.message : String(claimError),
           });
-          await ctx.reply('❌ Bločky sa teraz nepodarilo vyhľadať. Skús to prosím o chvíľu znova.');
+          await ctx.reply('❌ Bločky sa teraz nepodarilo vyhľadať. Skúste to, prosím, o chvíľu znova.');
         }
         return;
       }
 
       if (isAutomatedWeeklyReportRequest(text)) {
-        await ctx.reply('📅 Týždenný prehľad posielam automaticky každý pondelok o 8:00 za uplynulý týždeň.');
+        await ctx.reply('📅 Týždenný prehľad prichádza automaticky každý pondelok o 8:00 za uplynulý týždeň.');
         return;
       }
 
@@ -833,7 +833,7 @@ export function createTelegramBot(): Bot {
       }
 
       const saved = await saveTransaction(ctx, text);
-      await ctx.reply(saved ? `✅ Zapísané: ${saved.label} – ${formatAmount(saved.amount, saved.currency)}` : 'Sumu sa nepodarilo rozpoznať. Skús napríklad: Káva 3 €');
+      await ctx.reply(saved ? `✅ Zapísané: ${saved.label} – ${formatAmount(saved.amount, saved.currency)}` : 'Sumu sa nepodarilo rozpoznať. Skúste napríklad: Káva 3 €');
     } catch (error) {
       // The webhook has already been acknowledged; log failures without allowing
       // them to escape middleware and trigger a Telegram redelivery.
