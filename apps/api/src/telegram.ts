@@ -639,7 +639,7 @@ function batchTransactionSummary(items: NonNullable<Awaited<ReturnType<typeof sa
 function receiptPurchaseProtectionDecisionText(decision: ReceiptPurchaseProtectionDecision, keptReceipt: boolean): string {
   if (decision.archive_status === 'archived') {
     if (decision.protection_status === 'active' && decision.protection_ends_on) {
-      return '✅ Doklad je uložený a záruku sledujeme 2 roky. Ak máte dlhšiu záruku, napíšte jej dĺžku.';
+      return '✅ Doklad je uložený. Sledovanie je nastavené na 2 roky od dátumu nákupu. Ak máte inú alebo dlhšiu záruku, napíšte mi jej dĺžku.';
     }
     return '✅ Doklad je uložený. Sledovanie sa nespustilo, pretože súvisiaci finančný záznam už bol zrušený.';
   }
@@ -1091,12 +1091,12 @@ export function createTelegramBot(): Bot {
         const update = await updateReceiptPurchaseProtectionDuration(telegramUserId, warrantyDurationMonths);
         if (update) {
           clearWarrantyDurationPending(telegramUserId);
-          await ctx.reply(`✅ Záruka upravená na ${formatWarrantyDuration(update.warranty_duration_months)}.`);
+          await ctx.reply(`✅ Sledované obdobie bolo upravené na ${formatWarrantyDuration(update.warranty_duration_months)}.`);
           return;
         }
         if (warrantyDurationIsPending) {
           clearWarrantyDurationPending(telegramUserId);
-          await ctx.reply('❌ Záruku sa nepodarilo upraviť.');
+          await ctx.reply('❌ Sledované obdobie sa nepodarilo upraviť.');
           return;
         }
       }

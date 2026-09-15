@@ -67,8 +67,9 @@ test('Telegram asks after successful receipt processing and production cron invo
 });
 
 test('successful warranty confirmation invites the user to share a longer warranty without changing the callback flow', () => {
-  assert.match(telegram, /Doklad je uložený a záruku sledujeme 2 roky/u);
-  assert.match(telegram, /Ak máte dlhšiu záruku, napíšte jej dĺžku\./u);
+  assert.match(telegram, /Doklad je uložený\. Sledovanie je nastavené na 2 roky od dátumu nákupu/u);
+  assert.match(telegram, /Ak máte inú alebo dlhšiu záruku, napíšte mi jej dĺžku\./u);
+  assert.doesNotMatch(telegram, /zákonn.{0,30}(?:záruk|ochran)/iu);
   assert.match(telegram, /receiptPurchaseProtectionCallbackData\(receipt\.id, true\)/u);
   assert.match(telegram, /receiptPurchaseProtectionCallbackData\(receipt\.id, false\)/u);
 });
@@ -82,7 +83,7 @@ test('manual longer warranty updates remain server-scoped and preserve durable r
   assert.match(telegram, /updateReceiptPurchaseProtectionDuration/u);
   assert.ok(telegram.indexOf('const warrantyDurationMonths = parseWarrantyDurationMonths') < telegram.lastIndexOf('const saved = await saveTransaction'));
   assert.match(telegram, /markWarrantyDurationPending/u);
-  assert.match(telegram, /Záruka upravená na/u);
+  assert.match(telegram, /Sledované obdobie bolo upravené na/u);
 });
 
 test('reminder delivery details stay scoped to a claimed, archived receipt', () => {

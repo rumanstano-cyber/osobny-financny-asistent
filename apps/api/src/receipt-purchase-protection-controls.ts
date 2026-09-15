@@ -64,9 +64,9 @@ export function receiptPurchaseProtectionReminderText(
   const formattedDate = formatReceiptPurchaseDate(receiptDate);
 
   if (merchant && formattedDate) {
-    return `⏳ O ${days} dní končí sledovaná záruka k dokladu z ${merchant} z ${formattedDate}`;
+    return `⏳ O ${days} dní končí sledované obdobie k dokladu z ${merchant} z ${formattedDate}`;
   }
-  if (merchant) return `⏳ O ${days} dní končí sledovaná záruka k dokladu z ${merchant}.`;
-  if (formattedDate) return `⏳ O ${days} dní končí sledovaná záruka k dokladu z nákupu z ${formattedDate}`;
-  return `⏳ O ${days} dní končí sledovaná záruka k uloženému dokladu.`;
+  if (merchant) return `⏳ O ${days} dní končí sledované obdobie k dokladu z ${merchant}.`;
+  if (formattedDate) return `⏳ O ${days} dní končí sledované obdobie k dokladu z nákupu z ${formattedDate}`;
+  return `⏳ O ${days} dní končí sledované obdobie k uloženému dokladu.`;
 }
