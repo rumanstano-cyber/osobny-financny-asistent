@@ -18,6 +18,7 @@ import {
   budgetStatus,
   cancelBudget,
   claimBudgetAlert,
+  claimBudgetCallback,
   consumeBudgetAmountPending,
   getBudgetCategories,
   hasBudgetAmountPending,
@@ -30,6 +31,7 @@ import {
   type BudgetStatus,
 } from './budget-service.js';
 import { parseMultiExpenseMessage } from './multi-expense-parser.js';
+import { EXPIRED_BUDGET_OFFER_MESSAGE, acknowledgeBudgetCallback } from './budget-callback.js';
 import {
   batchCorrectionTarget,
   batchTransactionCallbackData,
@@ -901,17 +903,46 @@ export function createTelegramBot(): Bot {
     try { await ctx.editMessageReplyMarkup({ reply_markup: undefined }); } catch { /* the original message may no longer be editable */ }
   });
   bot.callbackQuery(/^bg([olncxs]):([0-9a-f-]{36})$/i, async (ctx) => {
-    if (!claimUpdate(ctx.update.update_id)) {
-      await ctx.answerCallbackQuery({ text: 'Toto kliknutie už bolo spracované.' });
+    const callbackData = ctx.callbackQuery.data;
+    const match = /^bg([olncxs]):([0-9a-f-]{36})$/i.exec(callbackData);
+    const messageId = ctx.callbackQuery.message?.message_id;
+    if (!ctx.from || !ctx.chat || messageId === undefined || !match) {
+      await acknowledgeBudgetCallback(
+        () => ctx.answerCallbackQuery({ text: 'Táto ponuka už nie je aktívna.' }),
+        (error) => console.warn('Telegram budget callback acknowledgement failed', { updateId: ctx.update.update_id, error: error instanceof Error ? error.message : String(error) }),
+      );
       return;
     }
+
     try {
-      await ctx.answerCallbackQuery();
-      if (!ctx.from) return;
-      const match = /^bg([olncxs]):([0-9a-f-]{36})$/i.exec(ctx.callbackQuery.data);
-      if (!match) return;
+      const claimed = await claimBudgetCallback({
+        telegramUserId: String(ctx.from.id),
+        chatId: String(ctx.chat.id),
+        messageId: String(messageId),
+        callbackQueryId: ctx.callbackQuery.id,
+        callbackData,
+      });
+      if (!claimed) {
+        await acknowledgeBudgetCallback(
+          () => ctx.answerCallbackQuery({ text: 'Toto kliknutie už bolo spracované.' }),
+          (error) => console.warn('Telegram duplicate budget callback acknowledgement failed', { updateId: ctx.update.update_id, error: error instanceof Error ? error.message : String(error) }),
+        );
+        return;
+      }
+
+      await acknowledgeBudgetCallback(
+        () => ctx.answerCallbackQuery(),
+        (error) => console.warn('Telegram budget callback acknowledgement failed; processing continues', { updateId: ctx.update.update_id, error: error instanceof Error ? error.message : String(error) }),
+      );
+      // Disable the claimed buttons immediately. A late click is still valid,
+      // but the same offer cannot trigger two independent operations.
+      try { await ctx.editMessageReplyMarkup({ reply_markup: undefined }); } catch { /* original message may no longer be editable */ }
+
       const context = await telegramBudgetContext(String(ctx.from.id));
-      if (!context) return;
+      if (!context) {
+        await ctx.reply(EXPIRED_BUDGET_OFFER_MESSAGE);
+        return;
+      }
       const action = match[1];
       const categoryId = match[2];
       if (action === 'l') {
@@ -926,12 +957,11 @@ export function createTelegramBot(): Bot {
       } else {
         const category = await startBudgetAmountPending(context, categoryId);
         if (!category) {
-          await ctx.reply('Tento výber limitu už nie je platný. Skúste to, prosím, znova.');
+          await ctx.reply(EXPIRED_BUDGET_OFFER_MESSAGE);
           return;
         }
         await ctx.reply(`Aký mesačný limit chcete nastaviť pre ${category.name}?\nNapíšte sumu, napr. 300 €.`);
       }
-      try { await ctx.editMessageReplyMarkup({ reply_markup: undefined }); } catch { /* original message may no longer be editable */ }
     } catch (error) {
       console.error('Telegram budget callback failed', { updateId: ctx.update.update_id, telegramUserId: ctx.from?.id, error: error instanceof Error ? error.message : String(error) });
       try { await ctx.reply('❌ Nastavenie limitu sa nepodarilo zmeniť. Skúste to, prosím, o chvíľu znova.'); } catch { /* update is already acknowledged */ }

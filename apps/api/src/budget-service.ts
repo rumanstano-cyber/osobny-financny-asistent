@@ -1,4 +1,9 @@
 import { supabase } from './supabase.js';
+import {
+  budgetAmountPendingExpiresAt,
+  budgetCallbackClaim,
+  type BudgetCallbackIdentity,
+} from './budget-callback.js';
 
 const timeZone = 'Europe/Bratislava';
 
@@ -128,10 +133,30 @@ export async function setBudgetOfferPreference(context: BudgetContext, mode: 'la
   if (error) throw new Error(error.message);
 }
 
+export async function claimBudgetCallback(identity: BudgetCallbackIdentity): Promise<boolean> {
+  const now = new Date().toISOString();
+  const claim = budgetCallbackClaim(identity);
+  const { error: cleanupError } = await supabase
+    .from('telegram_budget_callback_claims')
+    .delete()
+    .lt('expires_at', now);
+  if (cleanupError) throw new Error(cleanupError.message);
+
+  const { error } = await supabase.from('telegram_budget_callback_claims').insert({
+    claim_key: claim.claimKey,
+    callback_query_hash: claim.callbackQueryHash,
+    flow: 'budget',
+    expires_at: claim.expiresAt,
+  });
+  if (!error) return true;
+  if (error.code === '23505') return false;
+  throw new Error(error.message);
+}
+
 export async function startBudgetAmountPending(context: BudgetContext, categoryId: string): Promise<BudgetCategory | null> {
   const category = (await getBudgetCategories(context)).find((item) => item.id === categoryId) ?? null;
   if (!category) return null;
-  const { error } = await supabase.from('telegram_budget_pending_states').upsert({ workspace_id: context.workspaceId, user_id: context.userId, category_id: categoryId, intent: 'awaiting_budget_amount', expires_at: new Date(Date.now() + 15 * 60_000).toISOString() }, { onConflict: 'workspace_id,user_id' });
+  const { error } = await supabase.from('telegram_budget_pending_states').upsert({ workspace_id: context.workspaceId, user_id: context.userId, category_id: categoryId, intent: 'awaiting_budget_amount', expires_at: budgetAmountPendingExpiresAt() }, { onConflict: 'workspace_id,user_id' });
   if (error) throw new Error(error.message);
   return category;
 }
