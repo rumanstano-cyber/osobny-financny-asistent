@@ -10,7 +10,7 @@
     "set-webhook": "node scripts/set-telegram-webhook.mjs",
     "verify:telegram-env": "node scripts/verify-telegram-env.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "tsx --test src/*.test.ts"
+    "test": "tsx --test src/*.test.ts scripts/*.test.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.1",

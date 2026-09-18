@@ -1,0 +1,117 @@
+name: Production backup restore test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: production-backup-restore-test
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: eu-north-1
+  BACKUP_BUCKET: ofa-prod-backups-521390384594
+
+jobs:
+  restore-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: public.ecr.aws/supabase/postgres:17.6.1.155
+        env:
+          POSTGRES_PASSWORD: isolated-restore-only
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
+
+    steps:
+      - name: Obtain short-lived AWS credentials
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502
+        with:
+          role-to-assume: arn:aws:iam::521390384594:role/OFAProductionBackupGitHubRole
+          role-session-name: ofa-production-restore-test
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Restore the latest backup into an isolated runner
+        shell: bash
+        env:
+          POSTGRES_CONTAINER_ID: ${{ job.services.postgres.id }}
+        run: |
+          set -euo pipefail
+          umask 077
+          restore_dir="$(mktemp -d)"
+          trap 'rm -rf "$restore_dir"' EXIT
+
+          prefix="$(aws s3 cp "s3://${BACKUP_BUCKET}/latest.json" - --only-show-errors | jq -er '.prefix')"
+          case "$prefix" in
+            production/*/) ;;
+            *) echo "The latest backup pointer is invalid." >&2; exit 1 ;;
+          esac
+          aws s3 cp "s3://${BACKUP_BUCKET}/${prefix}" "$restore_dir/" \
+            --recursive \
+            --only-show-errors
+
+          RESTORE_DIRECTORY="$restore_dir" node <<'NODE'
+          const { createHash } = require('node:crypto');
+          const { readFileSync } = require('node:fs');
+          const { resolve, sep } = require('node:path');
+
+          const root = resolve(process.env.RESTORE_DIRECTORY);
+          const checksumLines = readFileSync(resolve(root, 'SHA256SUMS'), 'utf8')
+            .split('\n')
+            .filter(Boolean);
+          for (const line of checksumLines) {
+            const match = /^([a-f0-9]{64})  (.+)$/u.exec(line);
+            if (!match) throw new Error('Invalid checksum manifest');
+            const file = resolve(root, match[2]);
+            if (!file.startsWith(`${root}${sep}`)) throw new Error('Unsafe checksum path');
+            const actual = createHash('sha256').update(readFileSync(file)).digest('hex');
+            if (actual !== match[1]) throw new Error('Backup checksum mismatch');
+          }
+
+          const storage = JSON.parse(readFileSync(resolve(root, 'storage/manifest.json'), 'utf8'));
+          for (const object of storage.objects) {
+            const file = resolve(root, 'storage/objects', object.key);
+            if (!file.startsWith(`${resolve(root, 'storage/objects')}${sep}`)) {
+              throw new Error('Unsafe Storage restore path');
+            }
+            const actual = createHash('sha256').update(readFileSync(file)).digest('hex');
+            if (actual !== object.sha256) throw new Error('Storage object checksum mismatch');
+          }
+          console.log('Backup files and Storage objects passed integrity verification.');
+          NODE
+
+          # The restore database is disconnected before production data is loaded,
+          # so restored cron jobs or functions cannot call any external service.
+          for network in $(docker inspect -f '{{range $key, $value := .NetworkSettings.Networks}}{{$key}} {{end}}' "$POSTGRES_CONTAINER_ID"); do
+            docker network disconnect "$network" "$POSTGRES_CONTAINER_ID"
+          done
+
+          docker cp "$restore_dir/database/roles.sql" "$POSTGRES_CONTAINER_ID:/tmp/roles.sql"
+          docker cp "$restore_dir/database/schema.sql" "$POSTGRES_CONTAINER_ID:/tmp/schema.sql"
+          docker cp "$restore_dir/database/data.sql" "$POSTGRES_CONTAINER_ID:/tmp/data.sql"
+
+          docker exec "$POSTGRES_CONTAINER_ID" \
+            psql -v ON_ERROR_STOP=1 -U postgres -d postgres -f /tmp/roles.sql >/dev/null
+          docker exec "$POSTGRES_CONTAINER_ID" \
+            psql -v ON_ERROR_STOP=1 -U postgres -d postgres \
+            -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;' >/dev/null
+          docker exec "$POSTGRES_CONTAINER_ID" \
+            psql -v ON_ERROR_STOP=1 -U postgres -d postgres -f /tmp/schema.sql >/dev/null
+          docker exec "$POSTGRES_CONTAINER_ID" \
+            psql -v ON_ERROR_STOP=1 -U postgres -d postgres -f /tmp/data.sql >/dev/null
+          docker exec "$POSTGRES_CONTAINER_ID" \
+            psql -v ON_ERROR_STOP=1 -U postgres -d postgres -Atqc \
+            "select case when to_regclass('public.financial_transactions') is not null
+              and to_regclass('public.stored_files') is not null
+              and to_regclass('public.ofa_receipts') is not null
+              then 'restore-ok' else 'restore-invalid' end" \
+            | grep -qx 'restore-ok'
+
+          echo "Database and receipt files restored successfully in the isolated runner."

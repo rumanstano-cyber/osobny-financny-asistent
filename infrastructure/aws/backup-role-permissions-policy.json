@@ -1,0 +1,27 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ListOnlyTheBackupBucket",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::ofa-prod-backups-521390384594"
+    },
+    {
+      "Sid": "ReadAndWriteBackupObjectsWithoutDelete",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:GetObjectVersion",
+        "s3:PutObject"
+      ],
+      "Resource": "arn:aws:s3:::ofa-prod-backups-521390384594/*"
+    },
+    {
+      "Sid": "ReadOnlyTheBackupSourceSecret",
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "arn:aws:secretsmanager:eu-north-1:521390384594:secret:ofa/prod/backup-source-*"
+    }
+  ]
+}

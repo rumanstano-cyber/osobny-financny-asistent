@@ -1,0 +1,123 @@
+name: Production backup
+
+on:
+  schedule:
+    - cron: '15 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: production-backup
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: eu-north-1
+  BACKUP_BUCKET: ofa-prod-backups-521390384594
+  BACKUP_SOURCE_SECRET_ID: ofa/prod/backup-source
+  SUPABASE_CLI_VERSION: 2.117.0
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Obtain short-lived AWS credentials
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502
+        with:
+          role-to-assume: arn:aws:iam::521390384594:role/OFAProductionBackupGitHubRole
+          role-session-name: ofa-production-backup
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Load the protected backup source configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          secret_json="$(aws secretsmanager get-secret-value \
+            --secret-id "$BACKUP_SOURCE_SECRET_ID" \
+            --query SecretString \
+            --output text)"
+          db_password="$(jq -er '.SUPABASE_DB_PASSWORD | select(type == "string" and length > 0)' <<<"$secret_json")"
+          echo "::add-mask::$db_password"
+          db_url="$(SUPABASE_DB_PASSWORD="$db_password" node -e '
+            const url = new URL("postgresql://aws-0-eu-west-3.pooler.supabase.com:5432/postgres");
+            url.username = "postgres.axzatojzlajzbtukpuly";
+            url.password = process.env.SUPABASE_DB_PASSWORD;
+            process.stdout.write(url.toString());
+          ')"
+          echo "::add-mask::$db_url"
+          printf 'SUPABASE_DB_URL=%s\n' "$db_url" >> "$GITHUB_ENV"
+
+          for key in SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY; do
+            value="$(jq -er --arg key "$key" '.[$key] | select(type == "string" and length > 0)' <<<"$secret_json")"
+            echo "::add-mask::$value"
+            printf '%s=%s\n' "$key" "$value" >> "$GITHUB_ENV"
+          done
+
+      - name: Create database, Storage, and configuration backups
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          run_id="$(date -u +'%Y/%m/%d/%Y%m%dT%H%M%SZ')-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          work_dir="$(mktemp -d)"
+          trap 'rm -rf "$work_dir"' EXIT
+          mkdir -p "$work_dir/database" "$work_dir/storage" "$work_dir/config"
+
+          npx --yes "supabase@${SUPABASE_CLI_VERSION}" db dump \
+            --db-url "$SUPABASE_DB_URL" \
+            --file "$work_dir/database/roles.sql" \
+            --role-only
+          npx --yes "supabase@${SUPABASE_CLI_VERSION}" db dump \
+            --db-url "$SUPABASE_DB_URL" \
+            --file "$work_dir/database/schema.sql"
+          npx --yes "supabase@${SUPABASE_CLI_VERSION}" db dump \
+            --db-url "$SUPABASE_DB_URL" \
+            --file "$work_dir/database/data.sql" \
+            --use-copy \
+            --data-only \
+            -x 'storage.buckets_vectors' \
+            -x 'storage.vector_indexes'
+
+          BACKUP_STORAGE_DIRECTORY="$work_dir/storage" \
+            node apps/api/scripts/backup-supabase-storage.mjs
+
+          tar -czf "$work_dir/config/project-config.tar.gz" \
+            render.yaml .env.example supabase/migrations .github/workflows
+          (
+            cd "$work_dir"
+            find database storage config -type f -print0 \
+              | sort -z \
+              | xargs -0 sha256sum > SHA256SUMS
+          )
+          jq -n \
+            --arg created_at "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            --arg git_sha "$GITHUB_SHA" \
+            --arg run_id "$run_id" \
+            '{version: 1, createdAt: $created_at, gitSha: $git_sha, runId: $run_id}' \
+            > "$work_dir/backup.json"
+
+          aws s3 cp "$work_dir" "s3://${BACKUP_BUCKET}/production/${run_id}/" \
+            --recursive \
+            --sse AES256 \
+            --only-show-errors
+          printf '{"prefix":"production/%s/"}\n' "$run_id" > "$work_dir/latest.json"
+          aws s3 cp "$work_dir/latest.json" "s3://${BACKUP_BUCKET}/latest.json" \
+            --sse AES256 \
+            --content-type application/json \
+            --only-show-errors
+
+      - name: Verify that the backup marker is readable
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefix="$(aws s3 cp "s3://${BACKUP_BUCKET}/latest.json" - --only-show-errors | jq -er '.prefix')"
+          aws s3api head-object \
+            --bucket "$BACKUP_BUCKET" \
+            --key "${prefix}backup.json" \
+            >/dev/null
