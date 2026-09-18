@@ -176,11 +176,11 @@ jobs:
           };
           const relationParts = (relation) => relation.split('.').map(unquoteIdentifier);
           const targetColumns = (relation) => {
+            const relationLiteral = relation.replaceAll("'", "''");
             const output = execFileSync('docker', [
               'exec', container,
               'psql', '-U', 'supabase_admin', '-d', 'postgres', '-Atq',
-              '-v', `relation=${relation}`,
-              '-c', "select coalesce(json_agg(attname order by attnum)::text, 'null') from pg_attribute where attrelid = to_regclass(:'relation') and attnum > 0 and not attisdropped;",
+              '-c', `select coalesce(json_agg(attname order by attnum)::text, 'null') from pg_attribute where attrelid = to_regclass('${relationLiteral}') and attnum > 0 and not attisdropped;`,
             ], { encoding: 'utf8' }).trim();
             return JSON.parse(output);
           };
