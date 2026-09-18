@@ -114,6 +114,33 @@ jobs:
           docker cp "$restore_dir/database/schema.sql" "$POSTGRES_CONTAINER_ID:/tmp/schema.sql"
           docker cp "$restore_dir/database/data.sql" "$POSTGRES_CONTAINER_ID:/tmp/data.sql"
 
+          # A role-only Supabase dump can ALTER platform roles that are created by
+          # the managed service but are not present in a bare restore container.
+          # Pre-create only those roles, then let the verified dump restore their
+          # exact attributes and memberships.
+          RESTORE_DIRECTORY="$restore_dir" node <<'NODE'
+          const { readFileSync, writeFileSync } = require('node:fs');
+          const { resolve } = require('node:path');
+
+          const root = resolve(process.env.RESTORE_DIRECTORY);
+          const roleDump = readFileSync(resolve(root, 'database/roles.sql'), 'utf8');
+          const roles = new Set();
+          const alterRole = /^\s*ALTER\s+ROLE\s+(?:"((?:[^"]|"")+)"|([A-Za-z_][A-Za-z0-9_$]*))/gimu;
+          for (const match of roleDump.matchAll(alterRole)) {
+            roles.add(match[1] ? match[1].replaceAll('""', '"') : match[2]);
+          }
+          if (roles.size === 0) throw new Error('No roles found in the verified role dump');
+
+          const statements = [...roles].map((role) => {
+            const literal = role.replaceAll("'", "''");
+            return `DO $role$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${literal}') THEN EXECUTE format('CREATE ROLE %I', '${literal}'); END IF; END $role$;`;
+          });
+          writeFileSync(resolve(root, 'database/precreate-roles.sql'), `${statements.join('\n')}\n`, { mode: 0o600 });
+          NODE
+          docker cp "$restore_dir/database/precreate-roles.sql" "$POSTGRES_CONTAINER_ID:/tmp/precreate-roles.sql"
+
+          docker exec "$POSTGRES_CONTAINER_ID" \
+            psql -v ON_ERROR_STOP=1 -U postgres -d postgres -f /tmp/precreate-roles.sql >/dev/null
           docker exec "$POSTGRES_CONTAINER_ID" \
             psql -v ON_ERROR_STOP=1 -U postgres -d postgres -f /tmp/roles.sql >/dev/null
           docker exec "$POSTGRES_CONTAINER_ID" \
