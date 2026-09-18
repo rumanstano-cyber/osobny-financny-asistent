@@ -18,10 +18,14 @@
       "Resource": "arn:aws:s3:::ofa-prod-backups-521390384594/*"
     },
     {
-      "Sid": "ReadOnlyTheBackupSourceSecret",
+      "Sid": "ReadOnlyTheThreeBackupSourceSecrets",
       "Effect": "Allow",
       "Action": "secretsmanager:GetSecretValue",
-      "Resource": "arn:aws:secretsmanager:eu-north-1:521390384594:secret:ofa/prod/backup-source-*"
+      "Resource": [
+        "arn:aws:secretsmanager:eu-north-1:521390384594:secret:SUPABASE_URL-*",
+        "arn:aws:secretsmanager:eu-north-1:521390384594:secret:SUPABASE_SERVICE_ROLE_KEY-*",
+        "arn:aws:secretsmanager:eu-north-1:521390384594:secret:SUPABASE_DB_PASSWORD-*"
+      ]
     }
   ]
 }

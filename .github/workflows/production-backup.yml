@@ -16,7 +16,6 @@ concurrency:
 env:
   AWS_REGION: eu-north-1
   BACKUP_BUCKET: ofa-prod-backups-521390384594
-  BACKUP_SOURCE_SECRET_ID: ofa/prod/backup-source
   SUPABASE_CLI_VERSION: 2.117.0
 
 jobs:
@@ -55,11 +54,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          secret_json="$(aws secretsmanager get-secret-value \
-            --secret-id "$BACKUP_SOURCE_SECRET_ID" \
-            --query SecretString \
-            --output text)"
-          db_password="$(jq -er '.SUPABASE_DB_PASSWORD | select(type == "string" and length > 0)' <<<"$secret_json")"
+          load_secret() {
+            local secret_id="$1"
+            local key="$2"
+            local raw
+            raw="$(aws secretsmanager get-secret-value \
+              --secret-id "$secret_id" \
+              --query SecretString \
+              --output text)"
+            RAW_SECRET="$raw" SECRET_KEY="$key" node -e '
+              const raw = process.env.RAW_SECRET;
+              const key = process.env.SECRET_KEY;
+              let parsed = raw;
+              try { parsed = JSON.parse(raw); } catch {}
+              const value = parsed && typeof parsed === "object" ? parsed[key] : parsed;
+              if (typeof value !== "string" || value.length === 0) process.exit(1);
+              process.stdout.write(value);
+            '
+          }
+
+          db_password="$(load_secret SUPABASE_DB_PASSWORD SUPABASE_DB_PASSWORD)"
           echo "::add-mask::$db_password"
           db_url="$(SUPABASE_DB_PASSWORD="$db_password" node -e '
             const url = new URL("postgresql://aws-0-eu-west-3.pooler.supabase.com:5432/postgres");
@@ -71,7 +85,7 @@ jobs:
           printf 'SUPABASE_DB_URL=%s\n' "$db_url" >> "$GITHUB_ENV"
 
           for key in SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY; do
-            value="$(jq -er --arg key "$key" '.[$key] | select(type == "string" and length > 0)' <<<"$secret_json")"
+            value="$(load_secret "$key" "$key")"
             echo "::add-mask::$value"
             printf '%s=%s\n' "$key" "$value" >> "$GITHUB_ENV"
           done
