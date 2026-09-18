@@ -10,7 +10,7 @@
       "Condition": {
         "StringEquals": {
           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-          "token.actions.githubusercontent.com:sub": "repo:rumanstano-cyber/osobny-financny-asistent:ref:refs/heads/main"
+          "token.actions.githubusercontent.com:sub": "repo:rumanstano-cyber@313154210/osobny-financny-asistent@1323407617:ref:refs/heads/main"
         }
       }
     }

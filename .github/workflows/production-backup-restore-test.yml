@@ -41,7 +41,7 @@ jobs:
           token="$(jq -er '.value' <<<"$response")"
           OIDC_TOKEN="$token" node <<'NODE'
           const payload = JSON.parse(Buffer.from(process.env.OIDC_TOKEN.split('.')[1], 'base64url'));
-          const expectedSubject = 'repo:rumanstano-cyber/osobny-financny-asistent:ref:refs/heads/main';
+          const expectedSubject = 'repo:rumanstano-cyber@313154210/osobny-financny-asistent@1323407617:ref:refs/heads/main';
           if (payload.aud !== 'sts.amazonaws.com' || payload.sub !== expectedSubject) {
             throw new Error(`Unexpected GitHub OIDC claims: aud=${JSON.stringify(payload.aud)}, sub=${JSON.stringify(payload.sub)}`);
           }
