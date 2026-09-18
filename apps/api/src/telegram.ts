@@ -56,6 +56,17 @@ import {
   parseWarrantyDurationMonths,
   receiptPurchaseProtectionCallbackData,
 } from './receipt-purchase-protection-controls.js';
+import {
+  claimTelegramUpdate,
+  CostLimitExceededError,
+  enforceCostProtection,
+} from './cost-protection.js';
+import {
+  MAX_RECEIPT_IMAGE_BYTES,
+  MAX_VOICE_BYTES,
+  receiptImageIsWithinLimits,
+  voiceIsWithinLimits,
+} from './telegram-media-limits.js';
 
 type RpcResult = { transaction_id: string; workspace_id: string; was_duplicate: boolean };
 type BatchRpcResult = RpcResult & { item_index: number };
@@ -122,6 +133,26 @@ type ReceiptClaimMatch = {
 };
 const processedUpdateIds = new Set<number>();
 const maxTrackedUpdates = 10_000;
+const rateLimitNoticeUntil = new Map<string, number>();
+
+async function notifyRateLimit(ctx: Context, message: string): Promise<void> {
+  if (ctx.callbackQuery) {
+    try { await ctx.answerCallbackQuery({ text: message.slice(0, 180) }); } catch { /* callback may already be expired */ }
+    return;
+  }
+  if (!ctx.from) return;
+  const key = String(ctx.from.id);
+  const now = Date.now();
+  if ((rateLimitNoticeUntil.get(key) ?? 0) > now) return;
+  rateLimitNoticeUntil.set(key, now + 5 * 60_000);
+  if (rateLimitNoticeUntil.size > 10_000) {
+    for (const [candidate, expiresAt] of rateLimitNoticeUntil) {
+      if (expiresAt <= now || rateLimitNoticeUntil.size > 10_000) rateLimitNoticeUntil.delete(candidate);
+      if (rateLimitNoticeUntil.size <= 10_000) break;
+    }
+  }
+  await ctx.reply(message);
+}
 
 function name(ctx: Context) { return [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ') || ctx.from?.username || 'Používateľ'; }
 
@@ -480,7 +511,7 @@ async function handleCategoryCorrection(ctx: Context, text: string): Promise<voi
   let category = decision.kind === 'apply_category' ? decision.category : null;
   const hasExplicitDestination = /\b(do|na|pod)\b/iu.test(text) && !/\bnie\s+(je|sú)\b/iu.test(text);
   if (!category && decision.kind === 'show_picker' && decision.reason === 'unresolved' && hasExplicitDestination) {
-    const aiCategory = await resolveCategoryCorrectionWithAi(text, categories);
+    const aiCategory = await resolveCategoryCorrectionWithAi(text, categories, `telegram:${telegramUserId}`);
     if (aiCategory && aiCategory.confidence >= 0.9) {
       category = categories.find((candidate) => candidate.id === aiCategory.categoryId) ?? null;
     }
@@ -666,6 +697,10 @@ async function handleReceipt(ctx: Context): Promise<void> {
     await ctx.reply('🔎 Bloček sa spracúva…');
     stage = 'stiahnutie fotky z Telegramu';
     const file = await downloadTelegramFile(photo.file_id);
+    if (file.bytes.length > MAX_RECEIPT_IMAGE_BYTES) {
+      await ctx.reply('Fotografia je príliš veľká. Pošlite, prosím, obrázok do 10 MB.');
+      return;
+    }
     stage = 'kompresia fotky';
     const receiptImage = await optimizeReceiptImage(file.bytes);
 
@@ -692,7 +727,7 @@ async function handleReceipt(ctx: Context): Promise<void> {
       };
     } else {
       stage = 'OpenAI Vision OCR';
-      extraction = await extractReceipt(receiptImage.bytes, 'image/jpeg');
+      extraction = await extractReceipt(receiptImage.bytes, 'image/jpeg', `telegram:${ctx.from.id}`);
     }
 
     if (!extraction.amountMinor) {
@@ -751,7 +786,9 @@ async function handleReceipt(ctx: Context): Promise<void> {
       stage,
     }, error);
 
-    const message = stage === 'OpenAI Vision OCR'
+    const message = error instanceof CostLimitExceededError
+      ? 'Spracovanie bločkov je dočasne vyťažené. Skúste to, prosím, neskôr.'
+      : stage === 'OpenAI Vision OCR'
       ? describeReceiptOcrFailure(error).userMessage
       : `Spracovanie bločku zlyhalo pri fáze: ${stage}. Skúste to, prosím, znova.`;
     try {
@@ -764,15 +801,29 @@ async function handleReceipt(ctx: Context): Promise<void> {
 }
 
 async function handleVoice(ctx: Context, fileId: string): Promise<void> {
-  await ctx.reply('🎙️ Hlasová správa sa prepisuje…');
-  const audio = await downloadTelegramFile(fileId);
-  const text = await transcribeVoice(audio.bytes, audio.path);
-  if (isCancelLastTransactionRequest(text)) {
-    await requestLastTransactionVoid(ctx);
-    return;
+  if (!ctx.from) return;
+  try {
+    await ctx.reply('🎙️ Hlasová správa sa prepisuje…');
+    const audio = await downloadTelegramFile(fileId);
+    if (audio.bytes.length > MAX_VOICE_BYTES) {
+      await ctx.reply('Hlasová správa je príliš veľká. Pošlite, prosím, nahrávku do 20 MB a najviac 5 minút.');
+      return;
+    }
+    const text = await transcribeVoice(audio.bytes, audio.path, `telegram:${ctx.from.id}`);
+    if (isCancelLastTransactionRequest(text)) {
+      await requestLastTransactionVoid(ctx);
+      return;
+    }
+    const saved = await saveTransaction(ctx, text);
+    await ctx.reply(saved ? `✅ Zapísané: ${saved.label} – ${formatAmount(saved.amount, saved.currency)}` : `Správu sa nepodarilo rozpoznať: „${text}“`);
+  } catch (error) {
+    if (error instanceof CostLimitExceededError) {
+      await ctx.reply('Prepis hlasových správ je dočasne vyťažený. Skúste to, prosím, neskôr.');
+    } else {
+      await ctx.reply('❌ Hlasovú správu sa nepodarilo spracovať. Skúste to, prosím, znova.');
+    }
+    throw error;
   }
-  const saved = await saveTransaction(ctx, text);
-  await ctx.reply(saved ? `✅ Zapísané: ${saved.label} – ${formatAmount(saved.amount, saved.currency)}` : `Správu sa nepodarilo rozpoznať: „${text}“`);
 }
 
 /** Invoked by the durable worker, not by Telegram's HTTP webhook. */
@@ -793,6 +844,31 @@ export async function processQueuedTelegramMedia(bot: Bot, payload: TelegramMedi
 
 export function createTelegramBot(): Bot {
   const bot = new Bot(config.TELEGRAM_BOT_TOKEN);
+  bot.use(async (ctx, next) => {
+    if (!ctx.from) return next();
+    const telegramUserId = String(ctx.from.id);
+    try {
+      const claimed = await claimTelegramUpdate(ctx.update.update_id, telegramUserId);
+      if (!claimed) {
+        if (ctx.callbackQuery) {
+          try { await ctx.answerCallbackQuery({ text: 'Toto kliknutie už bolo spracované.' }); } catch { /* callback may already be expired */ }
+        }
+        return;
+      }
+      await enforceCostProtection('telegram_update', `telegram:${telegramUserId}`);
+      return next();
+    } catch (error) {
+      if (error instanceof CostLimitExceededError) {
+        await notifyRateLimit(ctx, 'Požiadaviek je teraz priveľa. Skúste to, prosím, neskôr.');
+        return;
+      }
+      console.error('Telegram anti-spam check failed closed', {
+        updateId: ctx.update.update_id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      await notifyRateLimit(ctx, 'Požiadavku sa teraz nepodarilo bezpečne spracovať. Skúste to, prosím, o chvíľu znova.');
+    }
+  });
   bot.command('start', async (ctx) => {
     await ctx.reply('Ahoj! Pošlite „Káva 3 €“, hlasovú správu alebo fotku bločku. E-mail zatiaľ nie je potrebný.');
   });
@@ -1051,7 +1127,19 @@ export function createTelegramBot(): Bot {
 
     try {
       if (ctx.message.photo) {
-        const job = telegramMediaJob(ctx, 'receipt', ctx.message.photo.at(-1)?.file_id ?? '');
+        const photo = ctx.message.photo.at(-1);
+        if (!receiptImageIsWithinLimits(photo?.file_size)) {
+          await ctx.reply('Fotografia je príliš veľká. Pošlite, prosím, obrázok do 10 MB.');
+          return;
+        }
+        try {
+          await enforceCostProtection('receipt_upload', `telegram:${ctx.from.id}`);
+        } catch (error) {
+          if (!(error instanceof CostLimitExceededError)) throw error;
+          await notifyRateLimit(ctx, 'Limit spracovania bločkov bol dočasne dosiahnutý. Skúste to, prosím, neskôr.');
+          return;
+        }
+        const job = telegramMediaJob(ctx, 'receipt', photo?.file_id ?? '');
         if (!job?.fileId) return;
         const inserted = await enqueueTelegramMediaJob(job);
         if (inserted) {
@@ -1065,6 +1153,17 @@ export function createTelegramBot(): Bot {
       // A text message has neither `voice` nor `audio` and bypasses this branch.
       const audioMessage = ctx.message.voice ?? ctx.message.audio;
       if (audioMessage) {
+        if (!voiceIsWithinLimits(audioMessage.file_size, audioMessage.duration)) {
+          await ctx.reply('Hlasová správa je príliš veľká alebo dlhá. Pošlite, prosím, nahrávku do 20 MB a najviac 5 minút.');
+          return;
+        }
+        try {
+          await enforceCostProtection('voice_upload', `telegram:${ctx.from.id}`);
+        } catch (error) {
+          if (!(error instanceof CostLimitExceededError)) throw error;
+          await notifyRateLimit(ctx, 'Limit hlasových správ bol dočasne dosiahnutý. Skúste to, prosím, neskôr.');
+          return;
+        }
         const job = telegramMediaJob(ctx, 'voice', audioMessage.file_id);
         if (!job) return;
         const inserted = await enqueueTelegramMediaJob(job);

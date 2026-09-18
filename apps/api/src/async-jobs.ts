@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Bot } from 'grammy';
 import { supabase } from './supabase.js';
+import { CostLimitExceededError } from './cost-protection.js';
 
 export type TelegramMediaJobPayload = {
   version: 1;
@@ -66,9 +67,12 @@ async function complete(jobId: string): Promise<void> {
 
 async function retryOrFail(job: ClaimedJob, error: unknown): Promise<void> {
   const message = error instanceof Error ? error.message.slice(0, 2_000) : String(error).slice(0, 2_000);
-  const exhausted = job.attempt_count >= job.max_attempts;
+  // A cost limit is an intentional fail-closed decision, not a provider outage.
+  // Retrying it would create duplicate user messages and extra queue pressure.
+  const rateLimited = error instanceof CostLimitExceededError;
+  const exhausted = rateLimited || job.attempt_count >= job.max_attempts;
   const patch = exhausted
-    ? { status: 'failed', completed_at: new Date().toISOString(), locked_at: null, last_error_code: 'processing_failed', last_error: message }
+    ? { status: 'failed', completed_at: new Date().toISOString(), locked_at: null, last_error_code: rateLimited ? 'rate_limited' : 'processing_failed', last_error: message }
     : { status: 'queued', locked_at: null, run_after: new Date(Date.now() + job.attempt_count * 60_000).toISOString(), last_error_code: 'processing_failed', last_error: message };
   const { error: updateError } = await supabase.from('async_jobs').update(patch).eq('id', job.id).eq('status', 'running');
   if (updateError) throw new Error(updateError.message);

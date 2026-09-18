@@ -1,7 +1,8 @@
 import OpenAI, { toFile } from 'openai';
 import { config } from './config.js';
+import { enforceCostProtection } from './cost-protection.js';
 
-const client = config.OPENAI_API_KEY ? new OpenAI({ apiKey: config.OPENAI_API_KEY }) : null;
+const client = config.OPENAI_API_KEY ? new OpenAI({ apiKey: config.OPENAI_API_KEY, maxRetries: 1, timeout: 45_000 }) : null;
 
 type OpenAiErrorDetails = {
   status?: unknown;
@@ -69,7 +70,8 @@ export function describeReceiptOcrFailure(error: unknown): ReceiptOcrFailure {
   return { ...details, code: 'provider', userMessage: 'OCR bločkov sa nepodarilo dokončiť pre chybu služby OpenAI. Skúste to, prosím, o chvíľu znova.' };
 }
 
-export async function transcribeVoice(audio: Buffer, fileName: string): Promise<string> {
+export async function transcribeVoice(audio: Buffer, fileName: string, subjectKey: string): Promise<string> {
+  await enforceCostProtection('ai_voice_transcription', subjectKey);
   const transcription = await requireClient().audio.transcriptions.create({
     file: await toFile(audio, fileName, { type: 'audio/ogg' }),
     model: 'gpt-4o-mini-transcribe',
@@ -119,11 +121,12 @@ Pravidlá rozhodovania pre neznáme alebo nešpecifikované položky:
 2. KONTEXT OBCHODNÍKA: Zohľadni typ predajcu alebo charakter obchodu (napr. servis, lekáreň, papiernictvo).
 3. PRAVIDLO ISTOTY (FALLBACK): Ak ani podľa účelu a predajcu nevieš s istotou (>80 %) určiť správnu kategóriu, ZARADIŠ POLOŽKU DO "Ostatné". Nikdy nehádaj a nevymýšľaj si nové kategórie.`;
 
-export async function classifyExpenseWithAi(context: string, allowedCategories: readonly { slug: string; name: string }[]): Promise<ExpenseCategoryAiResult | null> {
+export async function classifyExpenseWithAi(context: string, allowedCategories: readonly { slug: string; name: string }[], subjectKey: string): Promise<ExpenseCategoryAiResult | null> {
   if (!client) return null;
   if (allowedCategories.length === 0) return null;
   const allowed = allowedCategories.map((category) => `${category.slug} (${category.name})`).join(', ');
   try {
+    await enforceCostProtection('ai_categorization', subjectKey);
     const result = await client.chat.completions.create({
       model: 'gpt-4o-mini',
       response_format: { type: 'json_object' },
@@ -152,9 +155,11 @@ export async function classifyExpenseWithAi(context: string, allowedCategories: 
 export async function resolveCategoryCorrectionWithAi(
   text: string,
   categories: Array<{ id: string; name: string }>,
+  subjectKey: string,
 ): Promise<CategoryCorrectionAiResult | null> {
   if (!client || categories.length === 0) return null;
   try {
+    await enforceCostProtection('ai_category_correction', subjectKey);
     const allowed = categories.map((category) => ({ id: category.id, name: category.name }));
     const result = await client.chat.completions.create({
       model: 'gpt-4o-mini',
@@ -179,7 +184,8 @@ export async function resolveCategoryCorrectionWithAi(
   }
 }
 
-export async function extractReceipt(image: Buffer, mimeType: string): Promise<ReceiptExtraction> {
+export async function extractReceipt(image: Buffer, mimeType: string, subjectKey: string): Promise<ReceiptExtraction> {
+  await enforceCostProtection('ai_receipt_ocr', subjectKey);
   const result = await requireClient().chat.completions.create({
     model: 'gpt-4o-mini',
     response_format: { type: 'json_object' },
@@ -216,12 +222,14 @@ export async function extractReceipt(image: Buffer, mimeType: string): Promise<R
   };
 }
 
-export async function monthlyCommentary(summary: string): Promise<string> {
+export async function monthlyCommentary(summary: string, subjectKey: string): Promise<string> {
+  await enforceCostProtection('ai_report_commentary', subjectKey);
   const result = await requireClient().chat.completions.create({ model: 'gpt-4o-mini', messages: [{ role: 'system', content: 'You are a cautious personal-finance assistant. Write a short Slovak summary using only gender-neutral wording. Never use gendered second-person phrasing and never give investment advice.' }, { role: 'user', content: summary }] });
   return result.choices[0]?.message.content?.trim() ?? '';
 }
 
-export async function monthlyReportCommentary(summary: string): Promise<string> {
+export async function monthlyReportCommentary(summary: string, subjectKey: string): Promise<string> {
+  await enforceCostProtection('ai_report_commentary', subjectKey);
   const result = await requireClient().chat.completions.create({
     model: 'gpt-4o-mini',
     messages: [

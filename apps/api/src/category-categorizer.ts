@@ -80,7 +80,7 @@ export async function categorizeExpense(input: CategorizationInput): Promise<Exp
     return { slug: matchedCategory.slug, label: matchedCategory.name, source: 'rule', confidence: 1, reason: `Matched ${match.rule.match_type} rule: ${match.rule.keyword}` };
   }
 
-  const aiResult = await classifyExpenseWithAi(context, activeCategories);
+  const aiResult = await classifyExpenseWithAi(context, activeCategories, `telegram:${input.telegramUserId}`);
   const aiCategory = aiResult ? categoryBySlug.get(aiResult.categorySlug) : undefined;
   if (aiResult && aiResult.confidence > 0.8 && aiCategory) {
     return { slug: aiCategory.slug, label: aiCategory.name, source: 'ai', confidence: aiResult.confidence, reason: aiResult.reason };

@@ -8,7 +8,10 @@ import { startTelegramMediaJobWorker } from './async-jobs.js';
 import { processQueuedTelegramMedia } from './telegram.js';
 import { runReceiptPurchaseProtectionMaintenance, startReceiptPurchaseProtectionScheduler } from './receipt-purchase-protection.js';
 
-const app = Fastify({ logger: { level: config.NODE_ENV === 'production' ? 'info' : 'debug' } });
+const app = Fastify({
+  logger: { level: config.NODE_ENV === 'production' ? 'info' : 'debug' },
+  bodyLimit: 256 * 1024,
+});
 const telegramBot = createTelegramBot();
 type TelegramUpdate = Parameters<typeof telegramBot.handleUpdate>[0];
 

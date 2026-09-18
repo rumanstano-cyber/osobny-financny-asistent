@@ -450,7 +450,7 @@ export async function sendMonthlyReports(
       const previousReport = await buildMonthlyReport(workspace.id, workspace.base_currency_code, previousReferenceDate);
       const numbers = reportNumbers(report, previousReport.expenseMinor);
       let commentary: string;
-      try { commentary = await monthlyReportCommentary(numbers); } catch { commentary = 'Prehľad je pripravený. Odporúča sa sledovať najväčšie kategórie výdavkov v ďalšom mesiaci.'; }
+      try { commentary = await monthlyReportCommentary(numbers, `workspace:${workspace.id}`); } catch { commentary = 'Prehľad je pripravený. Odporúča sa sledovať najväčšie kategórie výdavkov v ďalšom mesiaci.'; }
       const chartUrl = quickChartUrl(report);
       // A successful channel is persisted independently. On a later retry it
       // must remain successful even when there is nothing left to send.
@@ -606,7 +606,7 @@ export async function currentMonthSummary(telegramUserId: string): Promise<strin
   if (!lookup.report) return lookup.unavailableMessage;
   const report = lookup.report;
   const summary = reportNumbers(report);
-  try { return `${summary}\n${await monthlyCommentary(summary)}`; } catch { return summary; }
+  try { return `${summary}\n${await monthlyCommentary(summary, `telegram:${telegramUserId}`)}`; } catch { return summary; }
 }
 
 export type CurrentMonthVisualReport = { chartUrl: string | null; caption: string };
@@ -617,7 +617,7 @@ export async function currentMonthVisualReport(telegramUserId: string): Promise<
 
   const summary = reportNumbers(lookup.report);
   let commentary = '';
-  try { commentary = await monthlyCommentary(summary); } catch { commentary = 'Prehľad je pripravený. Odporúča sa sledovať najväčšie kategórie výdavkov.'; }
+  try { commentary = await monthlyCommentary(summary, `telegram:${telegramUserId}`); } catch { commentary = 'Prehľad je pripravený. Odporúča sa sledovať najväčšie kategórie výdavkov.'; }
   return {
     chartUrl: lookup.report.categories.length > 0 ? quickChartUrl(lookup.report) : null,
     caption: telegramCaption(lookup.report, commentary),
