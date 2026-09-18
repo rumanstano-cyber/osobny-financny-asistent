@@ -145,18 +145,18 @@ jobs:
           docker cp "$restore_dir/database/precreate-roles.sql" "$POSTGRES_CONTAINER_ID:/tmp/precreate-roles.sql"
 
           docker exec "$POSTGRES_CONTAINER_ID" \
-            psql -v ON_ERROR_STOP=1 -U postgres -d postgres -f /tmp/precreate-roles.sql >/dev/null
+            psql -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -f /tmp/precreate-roles.sql >/dev/null
           docker exec "$POSTGRES_CONTAINER_ID" \
-            psql -v ON_ERROR_STOP=1 -U postgres -d postgres -f /tmp/roles.sql >/dev/null
+            psql -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -f /tmp/roles.sql >/dev/null
           docker exec "$POSTGRES_CONTAINER_ID" \
-            psql -v ON_ERROR_STOP=1 -U postgres -d postgres \
+            psql -v ON_ERROR_STOP=1 -U supabase_admin -d postgres \
             -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;' >/dev/null
           docker exec "$POSTGRES_CONTAINER_ID" \
-            psql -v ON_ERROR_STOP=1 -U postgres -d postgres -f /tmp/schema.sql >/dev/null
+            psql -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -f /tmp/schema.sql >/dev/null
           docker exec "$POSTGRES_CONTAINER_ID" \
-            psql -v ON_ERROR_STOP=1 -U postgres -d postgres -f /tmp/data.sql >/dev/null
+            psql -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -f /tmp/data.sql >/dev/null
           docker exec "$POSTGRES_CONTAINER_ID" \
-            psql -v ON_ERROR_STOP=1 -U postgres -d postgres -Atqc \
+            psql -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -Atqc \
             "select case when to_regclass('public.financial_transactions') is not null
               and to_regclass('public.stored_files') is not null
               and to_regclass('public.ofa_receipts') is not null
