@@ -43,7 +43,7 @@ jobs:
           const payload = JSON.parse(Buffer.from(process.env.OIDC_TOKEN.split('.')[1], 'base64url'));
           const expectedSubject = 'repo:rumanstano-cyber/osobny-financny-asistent:ref:refs/heads/main';
           if (payload.aud !== 'sts.amazonaws.com' || payload.sub !== expectedSubject) {
-            throw new Error('Unexpected GitHub OIDC audience or subject');
+            throw new Error(`Unexpected GitHub OIDC claims: aud=${JSON.stringify(payload.aud)}, sub=${JSON.stringify(payload.sub)}`);
           }
           console.log('GitHub OIDC audience and repository/branch subject are valid.');
           NODE
