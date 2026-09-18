@@ -112,7 +112,6 @@ jobs:
 
           docker cp "$restore_dir/database/roles.sql" "$POSTGRES_CONTAINER_ID:/tmp/roles.sql"
           docker cp "$restore_dir/database/schema.sql" "$POSTGRES_CONTAINER_ID:/tmp/schema.sql"
-          docker cp "$restore_dir/database/data.sql" "$POSTGRES_CONTAINER_ID:/tmp/data.sql"
 
           # A role-only Supabase dump can ALTER platform roles that are created by
           # the managed service but are not present in a bare restore container.
@@ -125,6 +124,7 @@ jobs:
           const root = resolve(process.env.RESTORE_DIRECTORY);
           const roleDump = readFileSync(resolve(root, 'database/roles.sql'), 'utf8');
           const schemaDump = readFileSync(resolve(root, 'database/schema.sql'), 'utf8');
+          const dataDump = readFileSync(resolve(root, 'database/data.sql'), 'utf8');
           const roles = new Set();
           const alterRole = /^\s*ALTER\s+ROLE\s+(?:"((?:[^"]|"")+)"|([A-Za-z_][A-Za-z0-9_$]*))/gimu;
           for (const match of roleDump.matchAll(alterRole)) {
@@ -141,8 +141,28 @@ jobs:
             return `DO $role$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${literal}') THEN EXECUTE format('CREATE ROLE %I', '${literal}'); END IF; END $role$;`;
           });
           writeFileSync(resolve(root, 'database/precreate-roles.sql'), `${statements.join('\n')}\n`, { mode: 0o600 });
+
+          // Hosted Auth audit metadata can have a newer service-owned schema
+          // than the isolated Postgres image. Keep it in the original backup,
+          // but omit this non-business COPY block from the compatibility test.
+          const output = [];
+          let skippingAuthAudit = false;
+          for (const line of dataDump.split('\n')) {
+            if (!skippingAuthAudit && /^COPY\s+(?:"?auth"?\.)"?audit_log_entries"?\s*\(/iu.test(line)) {
+              skippingAuthAudit = true;
+              continue;
+            }
+            if (skippingAuthAudit) {
+              if (line === '\\.') skippingAuthAudit = false;
+              continue;
+            }
+            output.push(line);
+          }
+          if (skippingAuthAudit) throw new Error('Unterminated auth.audit_log_entries COPY block');
+          writeFileSync(resolve(root, 'database/data-restore.sql'), output.join('\n'), { mode: 0o600 });
           NODE
           docker cp "$restore_dir/database/precreate-roles.sql" "$POSTGRES_CONTAINER_ID:/tmp/precreate-roles.sql"
+          docker cp "$restore_dir/database/data-restore.sql" "$POSTGRES_CONTAINER_ID:/tmp/data.sql"
 
           docker exec "$POSTGRES_CONTAINER_ID" \
             psql -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -f /tmp/precreate-roles.sql >/dev/null
