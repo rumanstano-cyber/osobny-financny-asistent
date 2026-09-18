@@ -124,10 +124,15 @@ jobs:
 
           const root = resolve(process.env.RESTORE_DIRECTORY);
           const roleDump = readFileSync(resolve(root, 'database/roles.sql'), 'utf8');
+          const schemaDump = readFileSync(resolve(root, 'database/schema.sql'), 'utf8');
           const roles = new Set();
           const alterRole = /^\s*ALTER\s+ROLE\s+(?:"((?:[^"]|"")+)"|([A-Za-z_][A-Za-z0-9_$]*))/gimu;
           for (const match of roleDump.matchAll(alterRole)) {
             roles.add(match[1] ? match[1].replaceAll('""', '"') : match[2]);
+          }
+          const platformRole = /\b(?:anon|authenticated|authenticator|dashboard_user|pgbouncer|service_role|supabase_[A-Za-z0-9_]+)\b/gu;
+          for (const match of `${roleDump}\n${schemaDump}`.matchAll(platformRole)) {
+            roles.add(match[0]);
           }
           if (roles.size === 0) throw new Error('No roles found in the verified role dump');
 
