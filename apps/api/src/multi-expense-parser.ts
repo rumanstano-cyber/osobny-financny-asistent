@@ -72,6 +72,26 @@ function parseImplicitAmountPairs(text: string): MultiExpenseParseResult {
 }
 
 /**
+ * Explicit separators already provide a trustworthy item boundary, so each
+ * line/part can support both "description amount" and "amount description".
+ * Every part is validated before anything reaches the atomic batch RPC.
+ */
+function parseExplicitItems(segments: string[]): MultiExpenseParseResult {
+  const candidates = segments.map((segment) => segment.trim()).filter(Boolean);
+  if (candidates.length < 2) return { kind: 'invalid' };
+
+  const items: ParsedTransaction[] = [];
+  for (const segment of candidates) {
+    if (countFinancialAmounts(segment) !== 1) return { kind: 'invalid' };
+    const parsed = parseFinancialMessage(segment);
+    if (!parsed || !parsed.note.trim()) return { kind: 'invalid' };
+    items.push(parsed);
+  }
+
+  return items.length >= 2 ? { kind: 'valid', items } : { kind: 'not_multi' };
+}
+
+/**
  * A multi-entry message is accepted only when every explicitly separated part
  * has a description and exactly one amount. This deliberately makes a batch
  * all-or-nothing instead of silently saving a partial financial record.
@@ -91,5 +111,6 @@ export function parseMultiExpenseMessage(text: string): MultiExpenseParseResult 
     return hasIncompleteItem ? { kind: 'invalid' } : { kind: 'not_multi' };
   }
 
+  if (hasSeparator) return parseExplicitItems(segments);
   return parseImplicitAmountPairs(text);
 }

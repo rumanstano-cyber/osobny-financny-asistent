@@ -57,6 +57,55 @@ test('supports newline-separated expenses and duplicate merchant names', () => {
   assert.deepEqual(items.map((item) => item.amountMinor), [1000, 2500, 4000]);
 });
 
+test('creates two transaction items when newline entries put the amount first', () => {
+  const items = validItems('9€ káva\n13,50€ reštaurácia');
+  assert.equal(items.length, 2);
+  assert.deepEqual(items.map((item) => [item.note, item.amountMinor]), [
+    ['káva', 900],
+    ['reštaurácia', 1350],
+  ]);
+});
+
+test('creates three transaction items from amount-first Slovak decimal lines', () => {
+  const items = validItems('9€ káva\n7,50€ organický obchod\n44€ drogéria');
+  assert.equal(items.length, 3);
+  assert.deepEqual(items.map((item) => [item.note, item.amountMinor]), [
+    ['káva', 900],
+    ['organický obchod', 750],
+    ['drogéria', 4400],
+  ]);
+});
+
+test('supports mixed amount placement and CRLF line endings', () => {
+  const items = validItems('káva 9 €\r\n13,50€ reštaurácia\r\ndrogéria 44€');
+  assert.deepEqual(items.map((item) => [item.note, item.amountMinor]), [
+    ['káva', 900],
+    ['reštaurácia', 1350],
+    ['drogéria', 4400],
+  ]);
+});
+
+test('ignores harmless blank lines around complete entries', () => {
+  const items = validItems('\n9€ káva\n\n13,50€ reštaurácia\n');
+  assert.deepEqual(items.map((item) => item.amountMinor), [900, 1350]);
+});
+
+test('supports amount-first entries separated by semicolons', () => {
+  const items = validItems('9€ káva; 13,50€ reštaurácia; 44€ drogéria');
+  assert.deepEqual(items.map((item) => item.amountMinor), [900, 1350, 4400]);
+});
+
+test('rejects the whole newline batch when any line is incomplete', () => {
+  assert.deepEqual(
+    parseMultiExpenseMessage('9€ káva\norganický obchod\n44€ drogéria'),
+    { kind: 'invalid' },
+  );
+});
+
+test('keeps one amount-first expense on the ordinary single-entry path', () => {
+  assert.deepEqual(parseMultiExpenseMessage('9€ káva'), { kind: 'not_multi' });
+});
+
 test('leaves ordinary single-expense messages on the existing parser path', () => {
   assert.deepEqual(parseMultiExpenseMessage('káva 3,50 €'), { kind: 'not_multi' });
 });
