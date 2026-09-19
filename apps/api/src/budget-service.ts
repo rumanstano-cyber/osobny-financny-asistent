@@ -44,11 +44,15 @@ export async function telegramBudgetContext(telegramUserId: string): Promise<Bud
     .from('channel_accounts').select('user_id').eq('channel', 'telegram').eq('external_account_id', telegramUserId).is('unlinked_at', null).maybeSingle();
   if (accountError) throw new Error(accountError.message);
   if (!account) return null;
+  const { data: user, error: userError } = await supabase
+    .from('ofa_users').select('id').eq('id', account.user_id).eq('status', 'active').is('deleted_at', null).maybeSingle();
+  if (userError) throw new Error(userError.message);
+  if (!user) return null;
   const { data: membership, error: membershipError } = await supabase
     .from('workspace_members').select('workspace_id').eq('user_id', account.user_id).eq('status', 'active').is('removed_at', null).limit(1).maybeSingle();
   if (membershipError) throw new Error(membershipError.message);
   if (!membership) return null;
-  const { data: workspace, error: workspaceError } = await supabase.from('workspaces').select('base_currency_code').eq('id', membership.workspace_id).maybeSingle();
+  const { data: workspace, error: workspaceError } = await supabase.from('workspaces').select('base_currency_code').eq('id', membership.workspace_id).is('deleted_at', null).maybeSingle();
   if (workspaceError) throw new Error(workspaceError.message);
   return workspace ? { userId: account.user_id, workspaceId: membership.workspace_id, currencyCode: workspace.base_currency_code } : null;
 }

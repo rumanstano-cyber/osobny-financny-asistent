@@ -4,6 +4,7 @@ import { config } from './config.js';
 import { receiptPurchaseProtectionReminderText } from './receipt-purchase-protection-controls.js';
 import { deliverReceiptReminder } from './receipt-purchase-protection-delivery.js';
 import { supabase } from './supabase.js';
+import { AccessRevokedError, assertTelegramPrincipalAccess } from './access-control.js';
 
 export type ReceiptPurchaseProtectionDecision = {
   archive_status: 'decision_pending' | 'archived' | 'pending_deletion' | 'cleanup_claimed' | 'storage_deleted';
@@ -79,6 +80,36 @@ async function sendDueReceiptPurchaseProtectionReminders(bot: Bot): Promise<numb
   let delivered = 0;
   for (const claim of (data as ReminderClaim[] | null) ?? []) {
     try {
+      try {
+        await assertTelegramPrincipalAccess(claim.telegram_user_id);
+      } catch (accessError) {
+        if (!(accessError instanceof AccessRevokedError)) throw accessError;
+        const { data: cancelledReminder, error: cancelError } = await supabase
+          .from('receipt_purchase_protection_reminders')
+          .update({
+            status: 'cancelled',
+            claimed_at: null,
+            last_error: 'Recipient access revoked before delivery',
+          })
+          .eq('id', claim.reminder_id)
+          .eq('status', 'sending')
+          .select('workspace_id')
+          .maybeSingle();
+        if (cancelError) throw new Error(cancelError.message);
+        if (cancelledReminder) {
+          const { error: auditError } = await supabase.from('audit_events').insert({
+            workspace_id: cancelledReminder.workspace_id,
+            actor_type: 'system',
+            action: 'receipt.purchase_protection_reminder_cancelled_access_revoked',
+            entity_type: 'receipt_purchase_protection_reminder',
+            entity_id: claim.reminder_id,
+          });
+          if (auditError) console.error('Revoked reminder audit event failed', { reminderId: claim.reminder_id, error: auditError.message });
+        }
+        console.info('Receipt purchase protection reminder cancelled after access revocation', { reminderId: claim.reminder_id });
+        continue;
+      }
+
       let details: ReminderDeliveryDetails | null = null;
       try {
         const { data: reminderDetails, error: detailsError } = await supabase.rpc('get_receipt_purchase_protection_reminder_delivery', {

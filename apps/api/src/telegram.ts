@@ -67,6 +67,7 @@ import {
   receiptImageIsWithinLimits,
   voiceIsWithinLimits,
 } from './telegram-media-limits.js';
+import { AccessRevokedError, assertTelegramPrincipalAccess } from './access-control.js';
 
 type RpcResult = { transaction_id: string; workspace_id: string; was_duplicate: boolean };
 type BatchRpcResult = RpcResult & { item_index: number };
@@ -152,6 +153,15 @@ async function notifyRateLimit(ctx: Context, message: string): Promise<void> {
     }
   }
   await ctx.reply(message);
+}
+
+async function notifyAccessRevoked(ctx: Context): Promise<void> {
+  const message = 'Prístup k účtu nie je aktívny. Ak ide o omyl, kontaktujte, prosím, podporu.';
+  if (ctx.callbackQuery) {
+    try { await ctx.answerCallbackQuery({ text: message.slice(0, 180), show_alert: true }); } catch { /* callback may already be expired */ }
+    return;
+  }
+  try { await ctx.reply(message); } catch { /* access remains denied even if Telegram delivery fails */ }
 }
 
 function name(ctx: Context) { return [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ') || ctx.from?.username || 'Používateľ'; }
@@ -606,12 +616,17 @@ function claimUpdate(updateId: number): boolean {
 
 async function saveTransaction(ctx: Context, text: string, categorizationInput: Omit<CategorizationInput, 'telegramUserId'> = {}): Promise<{ result: RpcResult; slug: string; label: string; amount: number; currency: 'EUR' | 'CZK' | 'USD' | 'GBP' | 'HUF' | 'PLN' } | null> {
   if (!ctx.from || !ctx.message || !ctx.chat) return null;
+  const telegramUserId = String(ctx.from.id);
+  await assertTelegramPrincipalAccess(telegramUserId, { allowNew: true });
   const parsed = parseFinancialMessage(text);
   if (!parsed) return null;
   const category = parsed.transactionType === 'expense'
-    ? await categorizeExpense({ telegramUserId: String(ctx.from.id), messageText: text, ...categorizationInput })
+    ? await categorizeExpense({ telegramUserId, messageText: text, ...categorizationInput })
     : { slug: parsed.categorySlug, label: parsed.categoryLabel };
-  const { data, error } = await supabase.rpc('record_telegram_transaction', { p_telegram_user_id: String(ctx.from.id), p_display_name: name(ctx), p_chat_id: String(ctx.chat.id), p_message_id: String(ctx.message.message_id), p_update_id: String(ctx.update.update_id), p_message_text: text, p_amount_minor: parsed.amountMinor, p_currency_code: parsed.currencyCode, p_transaction_type: parsed.transactionType, p_category_slug: category.slug, p_note: parsed.note, p_occurred_at: new Date(ctx.message.date * 1000).toISOString(), p_time_zone: 'Europe/Bratislava' });
+  // Re-check immediately before the protected write. Categorization may have
+  // involved an external provider and access could have changed meanwhile.
+  await assertTelegramPrincipalAccess(telegramUserId, { allowNew: true });
+  const { data, error } = await supabase.rpc('record_telegram_transaction', { p_telegram_user_id: telegramUserId, p_display_name: name(ctx), p_chat_id: String(ctx.chat.id), p_message_id: String(ctx.message.message_id), p_update_id: String(ctx.update.update_id), p_message_text: text, p_amount_minor: parsed.amountMinor, p_currency_code: parsed.currencyCode, p_transaction_type: parsed.transactionType, p_category_slug: category.slug, p_note: parsed.note, p_occurred_at: new Date(ctx.message.date * 1000).toISOString(), p_time_zone: 'Europe/Bratislava' });
   if (error) throw new Error(error.message);
   const result = (data as RpcResult[] | null)?.[0];
   return result ? { result, slug: category.slug, label: category.label, amount: parsed.amountMinor, currency: parsed.currencyCode } : null;
@@ -622,16 +637,20 @@ async function saveTransactionBatch(
   items: ParsedTransaction[],
 ): Promise<{ result: BatchRpcResult; note: string; slug: string; label: string; amount: number; currency: 'EUR' | 'CZK' | 'USD' | 'GBP' | 'HUF' | 'PLN' }[] | null> {
   if (!ctx.from || !ctx.message || !ctx.chat) return null;
+  const telegramUserId = String(ctx.from.id);
+  await assertTelegramPrincipalAccess(telegramUserId, { allowNew: true });
 
   const categorizedItems = await Promise.all(items.map(async (parsed) => {
     const category = parsed.transactionType === 'expense'
-      ? await categorizeExpense({ telegramUserId: String(ctx.from!.id), messageText: parsed.note })
+      ? await categorizeExpense({ telegramUserId, messageText: parsed.note })
       : { slug: parsed.categorySlug, label: parsed.categoryLabel, source: 'rule' as const, confidence: 1, reason: 'Income parser' };
     return { parsed, category };
   }));
 
+  await assertTelegramPrincipalAccess(telegramUserId, { allowNew: true });
+
   const { data, error } = await supabase.rpc('record_telegram_transaction_batch', {
-    p_telegram_user_id: String(ctx.from.id),
+    p_telegram_user_id: telegramUserId,
     p_display_name: name(ctx),
     p_chat_id: String(ctx.chat.id),
     p_message_id: String(ctx.message.message_id),
@@ -692,8 +711,10 @@ async function handleReceipt(ctx: Context): Promise<void> {
   const photo = ctx.message?.photo?.at(-1);
   if (!photo || !ctx.from || !ctx.message) return;
   let stage = 'príprava spracovania';
+  let temporaryKey: string | null = null;
 
   try {
+    await assertTelegramPrincipalAccess(String(ctx.from.id), { allowNew: true });
     await ctx.reply('🔎 Bloček sa spracúva…');
     stage = 'stiahnutie fotky z Telegramu';
     const file = await downloadTelegramFile(photo.file_id);
@@ -708,12 +729,14 @@ async function handleReceipt(ctx: Context): Promise<void> {
     // private and is moved to the permanent workspace key after the transaction
     // has resolved the workspace identity.
     stage = 'uloženie fotky do Supabase Storage';
+    await assertTelegramPrincipalAccess(String(ctx.from.id), { allowNew: true });
     const hash = createHash('sha256').update(receiptImage.bytes).digest('hex');
-    const temporaryKey = `incoming/telegram/${ctx.update.update_id}-${hash.slice(0, 16)}.jpg`;
+    temporaryKey = `incoming/telegram/${ctx.update.update_id}-${hash.slice(0, 16)}.jpg`;
     const upload = await supabase.storage.from('ofa-receipts').upload(temporaryKey, receiptImage.bytes, { contentType: 'image/jpeg', upsert: false });
     if (upload.error) throw new Error(upload.error.message);
 
     stage = 'čítanie eKasa QR kódu';
+    await assertTelegramPrincipalAccess(String(ctx.from.id), { allowNew: true });
     const ekasa = await readEkasaReceiptQr(receiptImage.bytes);
     let extraction: ReceiptExtraction;
     if (ekasa) {
@@ -727,6 +750,7 @@ async function handleReceipt(ctx: Context): Promise<void> {
       };
     } else {
       stage = 'OpenAI Vision OCR';
+      await assertTelegramPrincipalAccess(String(ctx.from.id), { allowNew: true });
       extraction = await extractReceipt(receiptImage.bytes, 'image/jpeg', `telegram:${ctx.from.id}`);
     }
 
@@ -739,6 +763,7 @@ async function handleReceipt(ctx: Context): Promise<void> {
     if (ekasa) console.log('eKasa amount before transaction save', { amountMinor: ekasa.amountMinor, synthetic });
     const saved = await saveTransaction(ctx, synthetic, { merchantName: extraction.merchantName, receiptText: extraction.ocrText });
     if (!saved || saved.result.was_duplicate) return;
+    await assertTelegramPrincipalAccess(String(ctx.from.id), { workspaceId: saved.result.workspace_id });
     if (ekasa) console.log('eKasa amount after transaction save', { parsedAmountMinor: saved.amount, transactionId: saved.result.transaction_id });
     stage = 'načítanie uloženej transakcie';
     const { data: transaction, error: transactionError } = await supabase.from('financial_transactions').select('created_by_user_id').eq('id', saved.result.transaction_id).single();
@@ -779,6 +804,11 @@ async function handleReceipt(ctx: Context): Promise<void> {
       .text('❌ NIE', receiptPurchaseProtectionCallbackData(receipt.id, false));
     await ctx.reply('Obsahuje tento bloček výrobok vhodný na sledovanie reklamácie / záruky?', { reply_markup: keyboard });
   } catch (error) {
+    if (temporaryKey) {
+      const { error: cleanupError } = await supabase.storage.from('ofa-receipts').remove([temporaryKey]);
+      if (cleanupError) console.error('Temporary receipt cleanup failed', { updateId: ctx.update.update_id, error: cleanupError.message });
+    }
+    if (error instanceof AccessRevokedError) throw error;
     // Pass the Error object itself to preserve its full stack trace in Render.
     console.error('Receipt processing failed', {
       updateId: ctx.update.update_id,
@@ -803,12 +833,14 @@ async function handleReceipt(ctx: Context): Promise<void> {
 async function handleVoice(ctx: Context, fileId: string): Promise<void> {
   if (!ctx.from) return;
   try {
+    await assertTelegramPrincipalAccess(String(ctx.from.id), { allowNew: true });
     await ctx.reply('🎙️ Hlasová správa sa prepisuje…');
     const audio = await downloadTelegramFile(fileId);
     if (audio.bytes.length > MAX_VOICE_BYTES) {
       await ctx.reply('Hlasová správa je príliš veľká. Pošlite, prosím, nahrávku do 20 MB a najviac 5 minút.');
       return;
     }
+    await assertTelegramPrincipalAccess(String(ctx.from.id), { allowNew: true });
     const text = await transcribeVoice(audio.bytes, audio.path, `telegram:${ctx.from.id}`);
     if (isCancelLastTransactionRequest(text)) {
       await requestLastTransactionVoid(ctx);
@@ -817,6 +849,7 @@ async function handleVoice(ctx: Context, fileId: string): Promise<void> {
     const saved = await saveTransaction(ctx, text);
     await ctx.reply(saved ? `✅ Zapísané: ${saved.label} – ${formatAmount(saved.amount, saved.currency)}` : `Správu sa nepodarilo rozpoznať: „${text}“`);
   } catch (error) {
+    if (error instanceof AccessRevokedError) throw error;
     if (error instanceof CostLimitExceededError) {
       await ctx.reply('Prepis hlasových správ je dočasne vyťažený. Skúste to, prosím, neskôr.');
     } else {
@@ -828,6 +861,10 @@ async function handleVoice(ctx: Context, fileId: string): Promise<void> {
 
 /** Invoked by the durable worker, not by Telegram's HTTP webhook. */
 export async function processQueuedTelegramMedia(bot: Bot, payload: TelegramMediaJobPayload): Promise<void> {
+  // This is deliberately checked after the job is claimed. It closes the race
+  // where an active user queues costly media work and is revoked before a
+  // worker starts processing it.
+  await assertTelegramPrincipalAccess(String(payload.telegramUserId), { allowNew: true });
   const message = payload.kind === 'receipt'
     ? { message_id: payload.messageId, date: payload.messageDate, photo: [{ file_id: payload.fileId }] }
     : { message_id: payload.messageId, date: payload.messageDate, voice: { file_id: payload.fileId } };
@@ -855,9 +892,14 @@ export function createTelegramBot(): Bot {
         }
         return;
       }
+      await assertTelegramPrincipalAccess(telegramUserId, { allowNew: true });
       await enforceCostProtection('telegram_update', `telegram:${telegramUserId}`);
       return next();
     } catch (error) {
+      if (error instanceof AccessRevokedError) {
+        await notifyAccessRevoked(ctx);
+        return;
+      }
       if (error instanceof CostLimitExceededError) {
         await notifyRateLimit(ctx, 'Požiadaviek je teraz priveľa. Skúste to, prosím, neskôr.');
         return;

@@ -400,21 +400,26 @@ export async function sendMonthlyReports(
   let membershipQuery = supabase
     .from('workspace_members')
     .select('workspace_id, user_id, role')
-    .eq('status', 'active');
+    .eq('status', 'active')
+    .is('removed_at', null);
   if (workspaceId) membershipQuery = membershipQuery.eq('workspace_id', workspaceId);
   const { data: memberships, error: membershipError } = await membershipQuery;
   if (membershipError) throw new Error(membershipError.message);
-  const activeMemberships = (memberships ?? []) as MembershipRow[];
-  if (activeMemberships.length === 0) return { delivered: 0, skipped: 0, failed: 0 };
+  const candidateMemberships = (memberships ?? []) as MembershipRow[];
+  if (candidateMemberships.length === 0) return { delivered: 0, skipped: 0, failed: 0 };
   const emailDeliveryEnabled = isEmailDeliveryConfigured();
 
-  const userIds = [...new Set(activeMemberships.map((membership) => membership.user_id))];
+  const userIds = [...new Set(candidateMemberships.map((membership) => membership.user_id))];
   const { data: users, error: userError } = await supabase
     .from('ofa_users')
     .select('id, email')
     .in('id', userIds)
+    .eq('status', 'active')
     .is('deleted_at', null);
   if (userError) throw new Error(userError.message);
+  const activeUserIds = new Set(((users ?? []) as UserEmailRow[]).map((user) => user.id));
+  const activeMemberships = candidateMemberships.filter((membership) => activeUserIds.has(membership.user_id));
+  if (activeMemberships.length === 0) return { delivered: 0, skipped: 0, failed: 0 };
   const emailByUserId = new Map(
     ((users ?? []) as UserEmailRow[])
       .filter((user): user is UserEmailRow & { email: string } => Boolean(user.email?.trim()))
@@ -537,10 +542,23 @@ export async function sendWeeklyReports(bot: Bot, referenceDate = new Date()): P
   const { data: memberships, error: membershipError } = await supabase
     .from('workspace_members')
     .select('workspace_id, user_id, role')
-    .eq('status', 'active');
+    .eq('status', 'active')
+    .is('removed_at', null);
   if (membershipError) throw new Error(membershipError.message);
+  const candidateMemberships = (memberships ?? []) as MembershipRow[];
+  const candidateUserIds = [...new Set(candidateMemberships.map((membership) => membership.user_id))];
+  if (candidateUserIds.length === 0) return { delivered: 0, skipped: 0, failed: 0 };
+  const { data: users, error: userError } = await supabase
+    .from('ofa_users')
+    .select('id')
+    .in('id', candidateUserIds)
+    .eq('status', 'active')
+    .is('deleted_at', null);
+  if (userError) throw new Error(userError.message);
+  const activeUserIds = new Set((users ?? []).map((user) => user.id));
   const membershipsByWorkspace = new Map<string, MembershipRow[]>();
-  for (const membership of (memberships ?? []) as MembershipRow[]) {
+  for (const membership of candidateMemberships) {
+    if (!activeUserIds.has(membership.user_id)) continue;
     if (!telegramAccountByUser.has(membership.user_id)) continue;
     const current = membershipsByWorkspace.get(membership.workspace_id) ?? [];
     current.push(membership);
@@ -593,7 +611,9 @@ export async function sendWeeklyReports(bot: Bot, referenceDate = new Date()): P
 async function loadCurrentMonthReport(telegramUserId: string): Promise<CurrentMonthReportLookup> {
   const { data: account } = await supabase.from('channel_accounts').select('user_id').eq('channel', 'telegram').eq('external_account_id', telegramUserId).is('unlinked_at', null).single();
   if (!account) return { report: null, unavailableMessage: 'Zatiaľ nie sú k dispozícii žiadne uložené transakcie.' };
-  const { data: membership } = await supabase.from('workspace_members').select('workspace_id').eq('user_id', account.user_id).eq('status', 'active').limit(1).single();
+  const { data: user } = await supabase.from('ofa_users').select('id').eq('id', account.user_id).eq('status', 'active').is('deleted_at', null).maybeSingle();
+  if (!user) return { report: null, unavailableMessage: 'Prístup k účtu nie je aktívny.' };
+  const { data: membership } = await supabase.from('workspace_members').select('workspace_id').eq('user_id', account.user_id).eq('status', 'active').is('removed_at', null).limit(1).single();
   if (!membership) return { report: null, unavailableMessage: 'Finančný priestor sa nepodarilo nájsť.' };
   const { data: workspace } = await supabase.from('workspaces').select('base_currency_code').eq('id', membership.workspace_id).is('deleted_at', null).single();
   if (!workspace) return { report: null, unavailableMessage: 'Finančný priestor sa nepodarilo nájsť.' };
