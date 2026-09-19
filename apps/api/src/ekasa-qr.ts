@@ -22,6 +22,7 @@ type JsonRecord = Record<string, unknown>;
 
 const ekasaLookupUrl = 'https://ekasa.financnasprava.sk/mdu/api/v1/opd/receipt/find';
 const ekasaHost = 'ekasa.financnasprava.sk';
+const MAX_RECEIPT_AMOUNT_MINOR = 100_000_000_00;
 
 function isRecord(value: unknown): value is JsonRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -68,7 +69,7 @@ function parseAmountMinor(value: unknown, key: string): number | null {
   const minor = key.includes('minor') || key.includes('cent')
     ? numeric
     : Math.round(numeric * 100);
-  return Number.isSafeInteger(minor) && minor > 0 ? minor : null;
+  return Number.isSafeInteger(minor) && minor > 0 && minor <= MAX_RECEIPT_AMOUNT_MINOR ? minor : null;
 }
 
 function receiptTotalMinor(receipt: unknown): number | null {
@@ -150,7 +151,9 @@ async function fetchEkasaReceipt(payload: string, offlinePayload: JsonRecord | n
 
     if (!response.ok || !response.headers.get('content-type')?.includes('application/json')) return null;
     const responseJson: unknown = await response.json();
-    console.log('eKasa receipt API response', JSON.stringify(responseJson));
+    // Never log the complete fiscal receipt response or QR payload. It may
+    // contain receipt identifiers and merchant/customer data.
+    console.info('eKasa receipt lookup succeeded', { payloadType: offlinePayload ? 'offline' : isEkasaReceiptId(payload) ? 'receipt_id' : 'url' });
     return responseJson;
   } catch (error) {
     console.warn('eKasa QR lookup failed', { error: error instanceof Error ? error.message : String(error) });

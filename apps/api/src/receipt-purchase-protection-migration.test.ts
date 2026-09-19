@@ -58,8 +58,8 @@ test('reminders are durable, only scheduled at 60/30/7 days, and voiding cancels
 
 test('Telegram asks after successful receipt processing and production cron invokes protected maintenance', () => {
   assert.match(telegram, /Obsahuje tento bloček výrobok vhodný na sledovanie reklamácie \/ záruky\?/u);
-  assert.match(telegram, /text\('✅ ÁNO', receiptPurchaseProtectionCallbackData\(receipt\.id, true\)\)/u);
-  assert.match(telegram, /text\('❌ NIE', receiptPurchaseProtectionCallbackData\(receipt\.id, false\)\)/u);
+  assert.match(telegram, /text\('✅ ÁNO', receiptPurchaseProtectionCallbackData\(receipt\.receipt_id, true\)\)/u);
+  assert.match(telegram, /text\('❌ NIE', receiptPurchaseProtectionCallbackData\(receipt\.receipt_id, false\)\)/u);
   assert.match(migration, /receipt-purchase-protection-maintenance/u);
   assert.match(migration, /X-Internal-Cron-Secret/u);
   assert.match(migration, /enable row level security/u);
@@ -70,8 +70,8 @@ test('successful warranty confirmation invites the user to share a longer warran
   assert.match(telegram, /Doklad je uložený\. Sledovanie je nastavené na 2 roky od dátumu nákupu/u);
   assert.match(telegram, /Ak máte inú alebo dlhšiu záruku, napíšte mi jej dĺžku\./u);
   assert.doesNotMatch(telegram, /zákonn.{0,30}(?:záruk|ochran)/iu);
-  assert.match(telegram, /receiptPurchaseProtectionCallbackData\(receipt\.id, true\)/u);
-  assert.match(telegram, /receiptPurchaseProtectionCallbackData\(receipt\.id, false\)/u);
+  assert.match(telegram, /receiptPurchaseProtectionCallbackData\(receipt\.receipt_id, true\)/u);
+  assert.match(telegram, /receiptPurchaseProtectionCallbackData\(receipt\.receipt_id, false\)/u);
 });
 
 test('manual longer warranty updates remain server-scoped and preserve durable reminders', () => {

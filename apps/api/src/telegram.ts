@@ -39,9 +39,9 @@ import {
   parseBatchTransactionCallbackData,
   type BatchTransactionCandidate,
 } from './multi-expense-correction.js';
-import { optimizeReceiptImage } from './receipt-image.js';
+import { InvalidReceiptImageError, optimizeReceiptImage } from './receipt-image.js';
 import { supabase } from './supabase.js';
-import { downloadTelegramFile } from './telegram-files.js';
+import { TelegramFileDownloadError, downloadTelegramFile } from './telegram-files.js';
 import { currentMonthVisualReport } from './reports.js';
 import { isCancelLastTransactionRequest } from './transaction-controls.js';
 import { enqueueTelegramMediaJob, wakeTelegramMediaJobWorker, type TelegramMediaJobPayload } from './async-jobs.js';
@@ -68,6 +68,7 @@ import {
   voiceIsWithinLimits,
 } from './telegram-media-limits.js';
 import { AccessRevokedError, assertTelegramPrincipalAccess } from './access-control.js';
+import { ReceiptPersistenceError } from './receipt-errors.js';
 
 type RpcResult = { transaction_id: string; workspace_id: string; was_duplicate: boolean };
 type BatchRpcResult = RpcResult & { item_index: number };
@@ -722,12 +723,13 @@ async function handleReceipt(ctx: Context): Promise<void> {
   if (!photo || !ctx.from || !ctx.message) return;
   let stage = 'príprava spracovania';
   let temporaryKey: string | null = null;
+  let permanentKey: string | null = null;
 
   try {
     await assertTelegramPrincipalAccess(String(ctx.from.id), { allowNew: true });
     await ctx.reply('🔎 Bloček sa spracúva…');
     stage = 'stiahnutie fotky z Telegramu';
-    const file = await downloadTelegramFile(photo.file_id);
+    const file = await downloadTelegramFile(photo.file_id, MAX_RECEIPT_IMAGE_BYTES);
     if (file.bytes.length > MAX_RECEIPT_IMAGE_BYTES) {
       await ctx.reply('Fotografia je príliš veľká. Pošlite, prosím, obrázok do 10 MB.');
       return;
@@ -743,7 +745,7 @@ async function handleReceipt(ctx: Context): Promise<void> {
     const hash = createHash('sha256').update(receiptImage.bytes).digest('hex');
     temporaryKey = `incoming/telegram/${ctx.update.update_id}-${hash.slice(0, 16)}.jpg`;
     const upload = await supabase.storage.from('ofa-receipts').upload(temporaryKey, receiptImage.bytes, { contentType: 'image/jpeg', upsert: false });
-    if (upload.error) throw new Error(upload.error.message);
+    if (upload.error && String((upload.error as { statusCode?: unknown }).statusCode) !== '409') throw new Error(upload.error.message);
 
     stage = 'čítanie eKasa QR kódu';
     await assertTelegramPrincipalAccess(String(ctx.from.id), { allowNew: true });
@@ -765,60 +767,78 @@ async function handleReceipt(ctx: Context): Promise<void> {
     }
 
     if (!extraction.amountMinor) {
-      await ctx.reply('Bloček sa uložil, no sumu sa nepodarilo spoľahlivo nájsť. Skúste, prosím, ostrejšiu fotku.');
-      return;
+      throw new InvalidReceiptImageError('Receipt total could not be extracted reliably');
     }
     stage = 'uloženie finančnej transakcie';
     const synthetic = `${extraction.merchantName ?? 'Bloček'} ${formatAmount(extraction.amountMinor, 'EUR')}`;
-    if (ekasa) console.log('eKasa amount before transaction save', { amountMinor: ekasa.amountMinor, synthetic });
     const saved = await saveTransaction(ctx, synthetic, { merchantName: extraction.merchantName, receiptText: extraction.ocrText });
-    if (!saved || saved.result.was_duplicate) return;
+    if (!saved) throw new Error('Receipt transaction was not created');
     await assertTelegramPrincipalAccess(String(ctx.from.id), { workspaceId: saved.result.workspace_id });
-    if (ekasa) console.log('eKasa amount after transaction save', { parsedAmountMinor: saved.amount, transactionId: saved.result.transaction_id });
     stage = 'načítanie uloženej transakcie';
     const { data: transaction, error: transactionError } = await supabase.from('financial_transactions').select('created_by_user_id').eq('id', saved.result.transaction_id).single();
     if (transactionError || !transaction) throw new Error(transactionError?.message ?? 'Transaction lookup failed');
     stage = 'presun fotky do trvalého úložiska';
-    const key = `${saved.result.workspace_id}/${ctx.message.message_id}-${hash.slice(0, 16)}.jpg`;
+    const key = `${saved.result.workspace_id}/${ctx.update.update_id}-${hash.slice(0, 16)}.jpg`;
+    permanentKey = key;
     const move = await supabase.storage.from('ofa-receipts').move(temporaryKey, key);
-    if (move.error) throw new Error(move.error.message);
-    stage = 'uloženie metadát bločku';
-    const sha256 = `\\x${hash}`;
-    const { data: storedFile, error: storedFileError } = await supabase.from('stored_files').insert({ workspace_id: saved.result.workspace_id, storage_provider: 'supabase_storage', storage_key: key, content_type: 'image/jpeg', byte_size: receiptImage.bytes.length, sha256, uploaded_by_user_id: transaction.created_by_user_id }).select('id').single();
-    if (storedFileError || !storedFile) throw new Error(storedFileError?.message ?? 'Receipt file metadata failed');
-    const retentionUntil = new Date(Date.now() + config.RECEIPT_STORAGE_RETENTION_HOURS * 60 * 60 * 1_000).toISOString();
-    const { data: receipt, error: receiptError } = await supabase.from('ofa_receipts').insert({ workspace_id: saved.result.workspace_id, file_id: storedFile.id, uploaded_by_user_id: transaction.created_by_user_id, status: 'completed', archive_status: 'decision_pending', retention_until: retentionUntil, merchant_name: extraction.merchantName, receipt_date: extraction.receiptDate, total_amount_minor: extraction.amountMinor, currency_code: 'EUR', ocr_text: extraction.ocrText, ocr_language: 'sk' }).select('id').single();
-    if (receiptError || !receipt) throw new Error(receiptError?.message ?? 'Receipt metadata failed');
-    if (extraction.items.length) {
-      stage = 'uloženie položiek bločku';
-      const { error: receiptItemsError } = await supabase.from('receipt_line_items').insert(extraction.items.map((item, index) => ({
-        workspace_id: saved.result.workspace_id,
-        receipt_id: receipt.id,
-        line_number: index + 1,
-        item_name: item.name,
-        quantity: item.quantity,
-        unit_amount_minor: item.unitAmountMinor,
-        total_amount_minor: item.totalAmountMinor,
-        currency_code: extraction.currencyCode,
-      })));
-      if (receiptItemsError) throw new Error(receiptItemsError.message);
+    if (move.error) {
+      const slash = key.lastIndexOf('/');
+      const directory = key.slice(0, slash);
+      const fileName = key.slice(slash + 1);
+      const { data: existing, error: listError } = await supabase.storage.from('ofa-receipts').list(directory, { search: fileName, limit: 2 });
+      if (listError || !existing?.some((entry) => entry.name === fileName)) throw new Error(move.error.message);
+      // A prior crashed attempt already moved the identical deterministic object.
+      await supabase.storage.from('ofa-receipts').remove([temporaryKey]);
     }
-    stage = 'uloženie OCR výsledku';
-    const { error: ocrRunError } = await supabase.from('receipt_ocr_runs').insert({ receipt_id: receipt.id, provider: ekasa ? 'ekasa' : 'openai', provider_model: ekasa ? 'mdu-api-v1' : 'gpt-4o-mini', status: 'completed', extracted_data: extraction, confidence: ekasa ? 1 : 0.8, completed_at: new Date().toISOString() });
-    if (ocrRunError) throw new Error(ocrRunError.message);
-    const { error: receiptLinkError } = await supabase.from('receipt_transaction_links').insert({ receipt_id: receipt.id, transaction_id: saved.result.transaction_id, link_source: 'ocr', confidence: ekasa ? 1 : 0.8 });
-    if (receiptLinkError) throw new Error(receiptLinkError.message);
+    temporaryKey = null;
+    stage = 'uloženie metadát bločku';
+    const retentionUntil = new Date(Date.now() + config.RECEIPT_STORAGE_RETENTION_HOURS * 60 * 60 * 1_000).toISOString();
+    const { data: finalizedRows, error: finalizeError } = await supabase.rpc('finalize_telegram_receipt', {
+      p_workspace_id: saved.result.workspace_id,
+      p_transaction_id: saved.result.transaction_id,
+      p_uploaded_by_user_id: transaction.created_by_user_id,
+      p_storage_key: key,
+      p_content_type: 'image/jpeg',
+      p_byte_size: receiptImage.bytes.length,
+      p_sha256_hex: hash,
+      p_merchant_name: extraction.merchantName,
+      p_receipt_date: extraction.receiptDate,
+      p_total_amount_minor: extraction.amountMinor,
+      p_currency_code: 'EUR',
+      p_ocr_text: extraction.ocrText,
+      p_ocr_language: 'sk',
+      p_items: extraction.items,
+      p_provider: ekasa ? 'ekasa' : 'openai',
+      p_provider_model: ekasa ? 'mdu-api-v1' : 'gpt-4o-mini',
+      p_confidence: ekasa ? 1 : 0.8,
+      p_retention_until: retentionUntil,
+    });
+    if (finalizeError) {
+      if (finalizeError.code === '42501') throw new AccessRevokedError();
+      const retryable = !['22023', '23505', '23514', 'PGRST202'].includes(finalizeError.code ?? '');
+      throw new ReceiptPersistenceError(finalizeError.message, retryable);
+    }
+    const receipt = (finalizedRows as Array<{ receipt_id: string; was_duplicate: boolean }> | null)?.[0];
+    if (!receipt) throw new Error('Receipt finalization returned no result');
+    if (receipt.was_duplicate) return;
     await ctx.reply(`${ekasa ? '✅ Zapísané z eKasa QR' : '✅ Zapísané z bločku'}: ${extraction.merchantName ?? 'Výdavok'} – ${formatAmount(extraction.amountMinor, 'EUR')}`);
     const keyboard = new InlineKeyboard()
-      .text('✅ ÁNO', receiptPurchaseProtectionCallbackData(receipt.id, true))
-      .text('❌ NIE', receiptPurchaseProtectionCallbackData(receipt.id, false));
+      .text('✅ ÁNO', receiptPurchaseProtectionCallbackData(receipt.receipt_id, true))
+      .text('❌ NIE', receiptPurchaseProtectionCallbackData(receipt.receipt_id, false));
     await ctx.reply('Obsahuje tento bloček výrobok vhodný na sledovanie reklamácie / záruky?', { reply_markup: keyboard });
   } catch (error) {
     if (temporaryKey) {
       const { error: cleanupError } = await supabase.storage.from('ofa-receipts').remove([temporaryKey]);
       if (cleanupError) console.error('Temporary receipt cleanup failed', { updateId: ctx.update.update_id, error: cleanupError.message });
     }
-    if (error instanceof AccessRevokedError) throw error;
+    if (permanentKey && (
+      error instanceof AccessRevokedError
+      || error instanceof InvalidReceiptImageError
+      || (error instanceof ReceiptPersistenceError && !error.retryable)
+    )) {
+      const { error: cleanupError } = await supabase.storage.from('ofa-receipts').remove([permanentKey]);
+      if (cleanupError) console.error('Permanent receipt cleanup failed', { updateId: ctx.update.update_id, error: cleanupError.message });
+    }
     // Pass the Error object itself to preserve its full stack trace in Render.
     console.error('Receipt processing failed', {
       updateId: ctx.update.update_id,
@@ -826,16 +846,6 @@ async function handleReceipt(ctx: Context): Promise<void> {
       stage,
     }, error);
 
-    const message = error instanceof CostLimitExceededError
-      ? 'Spracovanie bločkov je dočasne vyťažené. Skúste to, prosím, neskôr.'
-      : stage === 'OpenAI Vision OCR'
-      ? describeReceiptOcrFailure(error).userMessage
-      : `Spracovanie bločku zlyhalo pri fáze: ${stage}. Skúste to, prosím, znova.`;
-    try {
-      await ctx.reply(`❌ ${message}`);
-    } catch (replyError) {
-      console.error('Unable to send receipt failure message to Telegram', replyError);
-    }
     throw error;
   }
 }
@@ -845,7 +855,7 @@ async function handleVoice(ctx: Context, fileId: string): Promise<void> {
   try {
     await assertTelegramPrincipalAccess(String(ctx.from.id), { allowNew: true });
     await ctx.reply('🎙️ Hlasová správa sa prepisuje…');
-    const audio = await downloadTelegramFile(fileId);
+    const audio = await downloadTelegramFile(fileId, MAX_VOICE_BYTES);
     if (audio.bytes.length > MAX_VOICE_BYTES) {
       await ctx.reply('Hlasová správa je príliš veľká. Pošlite, prosím, nahrávku do 20 MB a najviac 5 minút.');
       return;
@@ -887,6 +897,21 @@ export async function processQueuedTelegramMedia(bot: Bot, payload: TelegramMedi
   } as unknown as Context;
   if (payload.kind === 'receipt') await handleReceipt(context);
   else await handleVoice(context, payload.fileId);
+}
+
+/** Sends exactly one user-facing message after a receipt job becomes terminal. */
+export async function notifyQueuedTelegramMediaFailure(bot: Bot, payload: TelegramMediaJobPayload, error: unknown): Promise<void> {
+  if (payload.kind !== 'receipt' || error instanceof AccessRevokedError) return;
+  const message = error instanceof CostLimitExceededError
+    ? 'Spracovanie bločkov je dočasne vyťažené. Skúste to, prosím, neskôr.'
+    : error instanceof InvalidReceiptImageError
+    ? 'Fotografiu sa nepodarilo bezpečne prečítať. Pošlite, prosím, úplnú a ostrú fotografiu vo formáte JPG alebo PNG.'
+    : error instanceof TelegramFileDownloadError && !error.retryable
+    ? 'Fotografia je neplatná alebo príliš veľká. Pošlite, prosím, obrázok do 10 MB.'
+    : describeReceiptOcrFailure(error).code !== 'provider'
+    ? describeReceiptOcrFailure(error).userMessage
+    : 'Spracovanie bločku sa nepodarilo dokončiť. Skúste to, prosím, neskôr.';
+  await bot.api.sendMessage(payload.chatId, `❌ ${message}`);
 }
 
 export function createTelegramBot(): Bot {

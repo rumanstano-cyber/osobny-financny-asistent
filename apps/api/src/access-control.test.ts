@@ -8,6 +8,9 @@ import {
   type TelegramPrincipalAccess,
 } from './access-control.js';
 import { terminalAsyncJobErrorCode } from './async-jobs.js';
+import { InvalidReceiptExtractionError } from './ai.js';
+import { InvalidReceiptImageError } from './receipt-image.js';
+import { TelegramFileDownloadError } from './telegram-files.js';
 
 const account = (unlinkedAt: string | null = null) => ({ user_id: 'user-a', unlinked_at: unlinkedAt });
 const user = (status = 'active', deletedAt: string | null = null) => ({ id: 'user-a', status, deleted_at: deletedAt });
@@ -111,6 +114,10 @@ test('workspace-scoped access fails closed outside active memberships', async ()
 
 test('a queued media job treats post-enqueue revocation as terminal', () => {
   assert.equal(terminalAsyncJobErrorCode(new AccessRevokedError()), 'access_revoked');
+  assert.equal(terminalAsyncJobErrorCode(new InvalidReceiptImageError('invalid')), 'invalid_media');
+  assert.equal(terminalAsyncJobErrorCode(new InvalidReceiptExtractionError('invalid')), 'invalid_ai_output');
+  assert.equal(terminalAsyncJobErrorCode(new TelegramFileDownloadError('too large', false)), 'invalid_media');
+  assert.equal(terminalAsyncJobErrorCode(new TelegramFileDownloadError('timeout', true)), null);
   assert.equal(terminalAsyncJobErrorCode(new Error('temporary provider outage')), null);
 });
 

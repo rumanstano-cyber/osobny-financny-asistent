@@ -3,6 +3,10 @@ import type { Bot } from 'grammy';
 import { supabase } from './supabase.js';
 import { CostLimitExceededError } from './cost-protection.js';
 import { AccessRevokedError } from './access-control.js';
+import { InvalidReceiptExtractionError, describeReceiptOcrFailure } from './ai.js';
+import { InvalidReceiptImageError } from './receipt-image.js';
+import { TelegramFileDownloadError } from './telegram-files.js';
+import { ReceiptPersistenceError } from './receipt-errors.js';
 
 export type TelegramMediaJobPayload = {
   version: 1;
@@ -18,15 +22,22 @@ export type TelegramMediaJobPayload = {
 
 type ClaimedJob = { id: string; payload: TelegramMediaJobPayload; attempt_count: number; max_attempts: number };
 
-export function terminalAsyncJobErrorCode(error: unknown): 'access_revoked' | 'rate_limited' | null {
+export function terminalAsyncJobErrorCode(error: unknown): 'access_revoked' | 'rate_limited' | 'invalid_media' | 'invalid_ai_output' | 'provider_configuration' | null {
   if (error instanceof AccessRevokedError) return 'access_revoked';
   if (error instanceof CostLimitExceededError) return 'rate_limited';
+  if (error instanceof InvalidReceiptImageError) return 'invalid_media';
+  if (error instanceof InvalidReceiptExtractionError) return 'invalid_ai_output';
+  if (error instanceof TelegramFileDownloadError && !error.retryable) return 'invalid_media';
+  if (error instanceof ReceiptPersistenceError && !error.retryable) return 'invalid_media';
+  const ocrFailure = describeReceiptOcrFailure(error);
+  if (['configuration', 'authentication', 'model', 'input'].includes(ocrFailure.code)) return 'provider_configuration';
   return null;
 }
 
 const telegramMediaJobType = 'telegram_media';
 let activeWorker: Promise<void> | null = null;
 let processJob: ((payload: TelegramMediaJobPayload) => Promise<void>) | null = null;
+let notifyFinalFailure: ((payload: TelegramMediaJobPayload, error: unknown) => Promise<void>) | null = null;
 let workerPoller: NodeJS.Timeout | null = null;
 
 function isPayload(value: unknown): value is TelegramMediaJobPayload {
@@ -40,7 +51,10 @@ function isPayload(value: unknown): value is TelegramMediaJobPayload {
     && Number.isInteger(candidate.chatId)
     && Number.isInteger(candidate.telegramUserId)
     && typeof candidate.displayName === 'string'
-    && typeof candidate.fileId === 'string';
+    && candidate.displayName.length <= 256
+    && typeof candidate.fileId === 'string'
+    && candidate.fileId.length > 0
+    && candidate.fileId.length <= 512;
 }
 
 export async function enqueueTelegramMediaJob(payload: TelegramMediaJobPayload): Promise<boolean> {
@@ -48,7 +62,7 @@ export async function enqueueTelegramMediaJob(payload: TelegramMediaJobPayload):
     job_type: telegramMediaJobType,
     payload,
     deduplication_key: `telegram:update:${payload.updateId}`,
-    max_attempts: 5,
+    max_attempts: 3,
   });
   if (!error) return true;
   if (error.code === '23505') return false;
@@ -72,7 +86,7 @@ async function complete(jobId: string): Promise<void> {
   if (error) throw new Error(error.message);
 }
 
-async function retryOrFail(job: ClaimedJob, error: unknown): Promise<void> {
+async function retryOrFail(job: ClaimedJob, error: unknown): Promise<boolean> {
   const message = error instanceof Error ? error.message.slice(0, 2_000) : String(error).slice(0, 2_000);
   // A cost limit is an intentional fail-closed decision, not a provider outage.
   // Retrying it would create duplicate user messages and extra queue pressure.
@@ -83,6 +97,7 @@ async function retryOrFail(job: ClaimedJob, error: unknown): Promise<void> {
     : { status: 'queued', locked_at: null, run_after: new Date(Date.now() + job.attempt_count * 60_000).toISOString(), last_error_code: 'processing_failed', last_error: message };
   const { error: updateError } = await supabase.from('async_jobs').update(patch).eq('id', job.id).eq('status', 'running');
   if (updateError) throw new Error(updateError.message);
+  return exhausted;
 }
 
 async function drain(): Promise<void> {
@@ -95,14 +110,23 @@ async function drain(): Promise<void> {
       await complete(job.id);
     } catch (error) {
       console.error('Telegram media job failed', { jobId: job.id, attempt: job.attempt_count, error: error instanceof Error ? error.message : String(error) });
-      await retryOrFail(job, error);
+      const exhausted = await retryOrFail(job, error);
+      if (exhausted && notifyFinalFailure) {
+        try { await notifyFinalFailure(job.payload, error); } catch (notificationError) {
+          console.error('Unable to notify user about terminal media job failure', { jobId: job.id, error: notificationError instanceof Error ? notificationError.message : String(notificationError) });
+        }
+      }
     }
   }
 }
 
 /** Starts one in-process worker; database row locks make multiple API replicas safe. */
-export function startTelegramMediaJobWorker(handler: (payload: TelegramMediaJobPayload) => Promise<void>): void {
+export function startTelegramMediaJobWorker(
+  handler: (payload: TelegramMediaJobPayload) => Promise<void>,
+  finalFailureHandler?: (payload: TelegramMediaJobPayload, error: unknown) => Promise<void>,
+): void {
   processJob = handler;
+  notifyFinalFailure = finalFailureHandler ?? null;
   void wakeTelegramMediaJobWorker().catch((error: unknown) => {
     console.error('Unable to start Telegram media worker', error);
   });
