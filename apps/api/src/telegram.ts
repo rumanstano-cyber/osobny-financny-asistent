@@ -353,12 +353,14 @@ function lastTransactionLabel(transaction: LastTransaction): string {
 }
 
 async function getLastTransaction(telegramUserId: string): Promise<LastTransaction | null> {
+  await assertTelegramPrincipalAccess(telegramUserId);
   const { data, error } = await supabase.rpc('get_last_telegram_transaction', { p_telegram_user_id: telegramUserId });
   if (error) throw new Error(error.message);
   return (data as LastTransaction[] | null)?.[0] ?? null;
 }
 
 async function voidTransaction(telegramUserId: string, transactionId: string): Promise<LastTransaction | null> {
+  await assertTelegramPrincipalAccess(telegramUserId);
   const { data, error } = await supabase.rpc('void_telegram_transaction', {
     p_telegram_user_id: telegramUserId,
     p_transaction_id: transactionId,
@@ -386,6 +388,7 @@ async function correctLastTransaction(telegramUserId: string, text: string, cate
   const category = parsed.transactionType === 'expense'
     ? await categorizeExpense({ telegramUserId, messageText: text, ...categorizationInput })
     : { slug: parsed.categorySlug, label: parsed.categoryLabel };
+  await assertTelegramPrincipalAccess(telegramUserId);
   const { data, error } = await supabase.rpc('correct_last_telegram_transaction', {
     p_telegram_user_id: telegramUserId,
     p_amount_minor: parsed.amountMinor,
@@ -399,6 +402,7 @@ async function correctLastTransaction(telegramUserId: string, text: string, cate
 }
 
 async function getCategoryCorrectionCategories(telegramUserId: string, transactionId: string): Promise<ActiveCategory[]> {
+  await assertTelegramPrincipalAccess(telegramUserId);
   const { data, error } = await supabase.rpc('get_telegram_category_correction_categories', {
     p_telegram_user_id: telegramUserId,
     p_transaction_id: transactionId,
@@ -419,6 +423,7 @@ async function getCategoryCorrectionCategories(telegramUserId: string, transacti
 }
 
 async function getLastTelegramBatchTransactions(telegramUserId: string): Promise<BatchTransactionCandidate[]> {
+  await assertTelegramPrincipalAccess(telegramUserId);
   const { data, error } = await supabase.rpc('get_telegram_last_batch_transactions', {
     p_telegram_user_id: telegramUserId,
   });
@@ -431,6 +436,7 @@ async function correctLastTransactionCategory(
   transactionId: string,
   categoryId: string,
 ): Promise<CategoryCorrectionResult | null> {
+  await assertTelegramPrincipalAccess(telegramUserId);
   const { data, error } = await supabase.rpc('correct_last_telegram_transaction_category', {
     p_telegram_user_id: telegramUserId,
     p_expected_transaction_id: transactionId,
@@ -541,12 +547,15 @@ async function handleCategoryCorrection(ctx: Context, text: string): Promise<voi
 }
 
 async function sendReceiptForClaim(ctx: Context, receipt: ReceiptClaimMatch): Promise<void> {
+  if (!ctx.from) return;
+  await assertTelegramPrincipalAccess(String(ctx.from.id));
   const { data, error } = await supabase.storage.from('ofa-receipts').createSignedUrl(receipt.storage_key, 10 * 60);
   if (error || !data?.signedUrl) throw new Error(error?.message ?? 'Signed URL for receipt was not created');
   await ctx.replyWithPhoto(data.signedUrl, { caption: claimCaption(receipt), parse_mode: 'HTML' });
 }
 
 async function findReceiptClaims(telegramUserId: string, query: string): Promise<ReceiptClaimMatch[]> {
+  await assertTelegramPrincipalAccess(telegramUserId);
   const { data, error } = await supabase.rpc('search_telegram_receipts_for_claim', {
     p_telegram_user_id: telegramUserId,
     p_query: query,
@@ -557,6 +566,7 @@ async function findReceiptClaims(telegramUserId: string, query: string): Promise
 }
 
 async function getReceiptClaim(telegramUserId: string, receiptId: string): Promise<ReceiptClaimMatch | null> {
+  await assertTelegramPrincipalAccess(telegramUserId);
   const { data, error } = await supabase.rpc('get_telegram_receipt_for_claim', {
     p_telegram_user_id: telegramUserId,
     p_receipt_id: receiptId,
@@ -922,6 +932,7 @@ export function createTelegramBot(): Bot {
         await ctx.reply('Vygenerujte párovací kód vo webovom prehľade a pošlite: /link TVOJ_KÓD');
         return;
       }
+      await assertTelegramPrincipalAccess(String(ctx.from.id), { allowNew: true });
       const { error } = await supabase.rpc('consume_telegram_link_code', {
         p_telegram_user_id: String(ctx.from.id),
         p_display_name: name(ctx),
@@ -1175,6 +1186,7 @@ export function createTelegramBot(): Bot {
           return;
         }
         try {
+          await assertTelegramPrincipalAccess(String(ctx.from.id), { allowNew: true });
           await enforceCostProtection('receipt_upload', `telegram:${ctx.from.id}`);
         } catch (error) {
           if (!(error instanceof CostLimitExceededError)) throw error;
@@ -1200,6 +1212,7 @@ export function createTelegramBot(): Bot {
           return;
         }
         try {
+          await assertTelegramPrincipalAccess(String(ctx.from.id), { allowNew: true });
           await enforceCostProtection('voice_upload', `telegram:${ctx.from.id}`);
         } catch (error) {
           if (!(error instanceof CostLimitExceededError)) throw error;
@@ -1309,6 +1322,7 @@ export function createTelegramBot(): Bot {
 
       if (isCurrentMonthReportRequest(text)) {
         const report = await currentMonthVisualReport(String(ctx.from.id));
+        await assertTelegramPrincipalAccess(String(ctx.from.id));
         if (report.chartUrl) {
           await ctx.replyWithPhoto(report.chartUrl, { caption: report.caption, parse_mode: 'HTML' });
         } else {

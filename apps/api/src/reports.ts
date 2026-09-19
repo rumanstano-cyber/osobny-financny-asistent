@@ -2,6 +2,7 @@ import type { Bot } from 'grammy';
 import { monthlyCommentary, monthlyReportCommentary } from './ai.js';
 import { config } from './config.js';
 import { supabase } from './supabase.js';
+import { AccessRevokedError, assertActiveUserWorkspaceAccess, assertTelegramPrincipalAccess } from './access-control.js';
 
 const reportTimeZone = 'Europe/Bratislava';
 
@@ -469,11 +470,17 @@ export async function sendMonthlyReports(
         const telegramChannel = `telegram:${membership.user_id}`;
         if (account && !deliveredChannels(delivery.dataSnapshot)[telegramChannel]) {
           try {
+            await assertActiveUserWorkspaceAccess(membership.user_id, workspace.id);
+            await assertTelegramPrincipalAccess(account.external_account_id, { workspaceId: workspace.id });
             await sendTelegramWithRetry(() => bot.api.sendPhoto(account.external_account_id, chartUrl, { caption: telegramCaption(report, commentary), parse_mode: 'HTML' }));
             delivery = await markChannelDelivered(delivery, telegramChannel);
           } catch (error) {
-            hadDeliveryFailure = true;
-            console.error('Telegram monthly report delivery failed', { workspaceId: workspace.id, error: error instanceof Error ? error.message : String(error) });
+            if (error instanceof AccessRevokedError) {
+              console.info('Telegram monthly report skipped after access revocation', { workspaceId: workspace.id, userId: membership.user_id });
+            } else {
+              hadDeliveryFailure = true;
+              console.error('Telegram monthly report delivery failed', { workspaceId: workspace.id, error: error instanceof Error ? error.message : String(error) });
+            }
           }
         }
 
@@ -481,14 +488,19 @@ export async function sendMonthlyReports(
         const emailChannel = `email:${membership.user_id}`;
         if (email && emailDeliveryEnabled && !deliveredChannels(delivery.dataSnapshot)[emailChannel]) {
           try {
+            await assertActiveUserWorkspaceAccess(membership.user_id, workspace.id);
             if (await sendReportEmail(report, commentary, chartUrl, email)) {
               delivery = await markChannelDelivered(delivery, emailChannel);
             } else {
               hadDeliveryFailure = true;
             }
           } catch (error) {
-            hadDeliveryFailure = true;
-            console.error('Monthly e-mail report delivery failed', { workspaceId: workspace.id, error: error instanceof Error ? error.message : String(error) });
+            if (error instanceof AccessRevokedError) {
+              console.info('Monthly e-mail report skipped after access revocation', { workspaceId: workspace.id, userId: membership.user_id });
+            } else {
+              hadDeliveryFailure = true;
+              console.error('Monthly e-mail report delivery failed', { workspaceId: workspace.id, error: error instanceof Error ? error.message : String(error) });
+            }
           }
         }
       }
@@ -592,10 +604,16 @@ export async function sendWeeklyReports(bot: Bot, referenceDate = new Date()): P
         const account = telegramAccountByUser.get(membership.user_id);
         if (!account) continue;
         try {
+          await assertActiveUserWorkspaceAccess(membership.user_id, workspace.id);
+          await assertTelegramPrincipalAccess(account.external_account_id, { workspaceId: workspace.id });
           await sendTelegramWithRetry(() => bot.api.sendMessage(account.external_account_id, weeklyTelegramCaption(report), { parse_mode: 'HTML' }));
           sent = true;
         } catch (error) {
-          console.error('Telegram weekly report delivery failed', { workspaceId: workspace.id, error: error instanceof Error ? error.message : String(error) });
+          if (error instanceof AccessRevokedError) {
+            console.info('Telegram weekly report skipped after access revocation', { workspaceId: workspace.id, userId: membership.user_id });
+          } else {
+            console.error('Telegram weekly report delivery failed', { workspaceId: workspace.id, error: error instanceof Error ? error.message : String(error) });
+          }
         }
       }
       await markDelivery(delivery.id, sent ? 'sent' : 'failed');

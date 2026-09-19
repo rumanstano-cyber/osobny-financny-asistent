@@ -4,6 +4,7 @@ import {
   budgetCallbackClaim,
   type BudgetCallbackIdentity,
 } from './budget-callback.js';
+import { assertActiveUserWorkspaceAccess } from './access-control.js';
 
 const timeZone = 'Europe/Bratislava';
 
@@ -58,6 +59,7 @@ export async function telegramBudgetContext(telegramUserId: string): Promise<Bud
 }
 
 export async function getBudgetCategories(context: BudgetContext): Promise<BudgetCategory[]> {
+  await assertActiveUserWorkspaceAccess(context.userId, context.workspaceId);
   const { data, error } = await supabase.from('categories').select('id, name, slug')
     .eq('transaction_type', 'expense').eq('is_active', true).eq('is_archived', false)
     .or(`workspace_id.is.null,workspace_id.eq.${context.workspaceId}`).order('name');
@@ -81,6 +83,7 @@ async function currentSpend(context: BudgetContext, categoryId: string, currency
 }
 
 export async function budgetStatus(context: BudgetContext, categoryId: string): Promise<BudgetStatus | null> {
+  await assertActiveUserWorkspaceAccess(context.userId, context.workspaceId);
   const { data, error } = await supabase.from('budgets').select('id, category_id, amount_minor, currency_code, categories!inner(name, slug)')
     .eq('workspace_id', context.workspaceId).eq('category_id', categoryId).eq('period', 'monthly').eq('is_active', true).is('deleted_at', null).maybeSingle();
   if (error) throw new Error(error.message);
@@ -93,6 +96,7 @@ export async function budgetStatus(context: BudgetContext, categoryId: string): 
 }
 
 export async function setBudget(context: BudgetContext, category: BudgetCategory, amountMinor: number, currencyCode: string): Promise<BudgetStatus> {
+  await assertActiveUserWorkspaceAccess(context.userId, context.workspaceId);
   const { data: existing, error: existingError } = await supabase.from('budgets').select('id').eq('workspace_id', context.workspaceId).eq('category_id', category.id).eq('period', 'monthly').eq('is_active', true).is('deleted_at', null).maybeSingle();
   if (existingError) throw new Error(existingError.message);
   const now = new Date().toISOString();
@@ -112,6 +116,7 @@ export async function setBudget(context: BudgetContext, category: BudgetCategory
 }
 
 export async function cancelBudget(context: BudgetContext, categoryId: string): Promise<BudgetStatus | null> {
+  await assertActiveUserWorkspaceAccess(context.userId, context.workspaceId);
   const current = await budgetStatus(context, categoryId);
   if (!current) return null;
   const { error } = await supabase.from('budgets').update({ is_active: false, deleted_at: new Date().toISOString() }).eq('id', current.id);
@@ -121,6 +126,7 @@ export async function cancelBudget(context: BudgetContext, categoryId: string): 
 }
 
 export async function claimBudgetAlert(context: BudgetContext, status: BudgetStatus, threshold: 80 | 100): Promise<boolean> {
+  await assertActiveUserWorkspaceAccess(context.userId, context.workspaceId);
   if (status.percent < threshold) return false;
   const periodStart = monthPeriod().start.toISOString().slice(0, 10);
   const { error } = await supabase.from('budget_alert_events').insert({ workspace_id: context.workspaceId, budget_id: status.id, period_start: periodStart, threshold, sent_at: new Date().toISOString() });
@@ -130,6 +136,7 @@ export async function claimBudgetAlert(context: BudgetContext, status: BudgetSta
 }
 
 export async function setBudgetOfferPreference(context: BudgetContext, mode: 'later' | 'never'): Promise<void> {
+  await assertActiveUserWorkspaceAccess(context.userId, context.workspaceId);
   const payload = mode === 'never'
     ? { proactive_budget_offers_enabled: false, suppressed_until: null, last_offer_at: new Date().toISOString() }
     : { proactive_budget_offers_enabled: true, suppressed_until: new Date(Date.now() + 14 * 24 * 60 * 60_000).toISOString(), last_offer_at: new Date().toISOString() };
@@ -158,6 +165,7 @@ export async function claimBudgetCallback(identity: BudgetCallbackIdentity): Pro
 }
 
 export async function startBudgetAmountPending(context: BudgetContext, categoryId: string): Promise<BudgetCategory | null> {
+  await assertActiveUserWorkspaceAccess(context.userId, context.workspaceId);
   const category = (await getBudgetCategories(context)).find((item) => item.id === categoryId) ?? null;
   if (!category) return null;
   const { error } = await supabase.from('telegram_budget_pending_states').upsert({ workspace_id: context.workspaceId, user_id: context.userId, category_id: categoryId, intent: 'awaiting_budget_amount', expires_at: budgetAmountPendingExpiresAt() }, { onConflict: 'workspace_id,user_id' });
@@ -166,6 +174,7 @@ export async function startBudgetAmountPending(context: BudgetContext, categoryI
 }
 
 export async function consumeBudgetAmountPending(context: BudgetContext, amountMinor: number, currencyCode: string): Promise<BudgetStatus | null> {
+  await assertActiveUserWorkspaceAccess(context.userId, context.workspaceId);
   const { data, error } = await supabase.from('telegram_budget_pending_states').select('category_id, expires_at').eq('workspace_id', context.workspaceId).eq('user_id', context.userId).maybeSingle();
   if (error) throw new Error(error.message);
   if (!data || new Date(data.expires_at).getTime() < Date.now()) return null;
@@ -177,6 +186,7 @@ export async function consumeBudgetAmountPending(context: BudgetContext, amountM
 }
 
 export async function hasBudgetAmountPending(context: BudgetContext): Promise<boolean> {
+  await assertActiveUserWorkspaceAccess(context.userId, context.workspaceId);
   const { data, error } = await supabase.from('telegram_budget_pending_states').select('expires_at').eq('workspace_id', context.workspaceId).eq('user_id', context.userId).maybeSingle();
   if (error) throw new Error(error.message);
   if (!data) return false;
@@ -186,6 +196,7 @@ export async function hasBudgetAmountPending(context: BudgetContext): Promise<bo
 }
 
 export async function maybeBudgetOffer(context: BudgetContext, categoryId: string): Promise<BudgetStatus | BudgetCategory | null> {
+  await assertActiveUserWorkspaceAccess(context.userId, context.workspaceId);
   const category = (await getBudgetCategories(context)).find((item) => item.id === categoryId);
   if (!category || await budgetStatus(context, categoryId)) return null;
   const { data: preference, error } = await supabase.from('budget_preferences').select('proactive_budget_offers_enabled, suppressed_until, last_offer_at').eq('workspace_id', context.workspaceId).eq('user_id', context.userId).maybeSingle();

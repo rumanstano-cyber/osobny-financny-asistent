@@ -104,3 +104,15 @@ export async function assertTelegramPrincipalAccess(
   }
   return access;
 }
+
+/** Revalidates an already resolved user/workspace pair immediately before use. */
+export async function assertActiveUserWorkspaceAccess(userId: string, workspaceId: string): Promise<void> {
+  const [userResult, membershipResult, workspaceResult] = await Promise.all([
+    supabase.from('ofa_users').select('id').eq('id', userId).eq('status', 'active').is('deleted_at', null).maybeSingle(),
+    supabase.from('workspace_members').select('workspace_id').eq('user_id', userId).eq('workspace_id', workspaceId).eq('status', 'active').is('removed_at', null).maybeSingle(),
+    supabase.from('workspaces').select('id').eq('id', workspaceId).is('deleted_at', null).maybeSingle(),
+  ]);
+  const error = userResult.error ?? membershipResult.error ?? workspaceResult.error;
+  if (error) throw new Error(error.message);
+  if (!userResult.data || !membershipResult.data || !workspaceResult.data) throw new AccessRevokedError();
+}
