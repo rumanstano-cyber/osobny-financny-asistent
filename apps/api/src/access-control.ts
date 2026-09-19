@@ -22,9 +22,12 @@ export function deriveTelegramPrincipalAccess(
   users: UserRow[],
   memberships: MembershipRow[],
   existingWorkspaceIds: ReadonlySet<string>,
+  options: { allowUnlinkedForRelink?: boolean } = {},
 ): TelegramPrincipalAccess {
   if (accounts.length === 0) return { state: 'new', userId: null, activeWorkspaceIds: [] };
-  const linkedUserIds = new Set(accounts.filter((account) => account.unlinked_at === null).map((account) => account.user_id));
+  const linkedUserIds = new Set(accounts
+    .filter((account) => account.unlinked_at === null || options.allowUnlinkedForRelink)
+    .map((account) => account.user_id));
   const activeUsers = users.filter((user) => linkedUserIds.has(user.id) && user.status === 'active' && user.deleted_at === null);
   for (const user of activeUsers) {
     const activeWorkspaceIds = memberships
@@ -45,7 +48,10 @@ export function deriveTelegramPrincipalAccess(
  * unlinking, suspending/deleting the user, removing all memberships, or
  * deleting all of their workspaces is a revocation and must never look new.
  */
-export async function resolveTelegramPrincipalAccess(telegramUserId: string): Promise<TelegramPrincipalAccess> {
+export async function resolveTelegramPrincipalAccess(
+  telegramUserId: string,
+  options: { allowUnlinkedForRelink?: boolean } = {},
+): Promise<TelegramPrincipalAccess> {
   const { data: accountData, error: accountError } = await supabase
     .from('channel_accounts')
     .select('user_id, unlinked_at')
@@ -56,8 +62,10 @@ export async function resolveTelegramPrincipalAccess(telegramUserId: string): Pr
   const accounts = (accountData ?? []) as ChannelAccountRow[];
   if (accounts.length === 0) return { state: 'new', userId: null, activeWorkspaceIds: [] };
 
-  const linkedUserIds = [...new Set(accounts.filter((account) => account.unlinked_at === null).map((account) => account.user_id))];
-  if (linkedUserIds.length === 0) return deriveTelegramPrincipalAccess(accounts, [], [], new Set());
+  const linkedUserIds = [...new Set(accounts
+    .filter((account) => account.unlinked_at === null || options.allowUnlinkedForRelink)
+    .map((account) => account.user_id))];
+  if (linkedUserIds.length === 0) return deriveTelegramPrincipalAccess(accounts, [], [], new Set(), options);
 
   const { data: userData, error: userError } = await supabase
     .from('ofa_users')
@@ -66,7 +74,7 @@ export async function resolveTelegramPrincipalAccess(telegramUserId: string): Pr
   if (userError) throw new Error(userError.message);
   const users = (userData ?? []) as UserRow[];
   const activeUsers = users.filter((user) => user.status === 'active' && user.deleted_at === null);
-  if (activeUsers.length === 0) return deriveTelegramPrincipalAccess(accounts, users, [], new Set());
+  if (activeUsers.length === 0) return deriveTelegramPrincipalAccess(accounts, users, [], new Set(), options);
 
   const activeUserIds = activeUsers.map((user) => user.id);
   const { data: membershipData, error: membershipError } = await supabase
@@ -78,7 +86,7 @@ export async function resolveTelegramPrincipalAccess(telegramUserId: string): Pr
   if (membershipError) throw new Error(membershipError.message);
   const memberships = (membershipData ?? []) as MembershipRow[];
   const workspaceIds = [...new Set(memberships.map((membership) => membership.workspace_id))];
-  if (workspaceIds.length === 0) return deriveTelegramPrincipalAccess(accounts, users, memberships, new Set());
+  if (workspaceIds.length === 0) return deriveTelegramPrincipalAccess(accounts, users, memberships, new Set(), options);
 
   const { data: workspaceData, error: workspaceError } = await supabase
     .from('workspaces')
@@ -88,15 +96,15 @@ export async function resolveTelegramPrincipalAccess(telegramUserId: string): Pr
   if (workspaceError) throw new Error(workspaceError.message);
   const existingWorkspaceIds = new Set((workspaceData ?? []).map((workspace) => workspace.id));
 
-  return deriveTelegramPrincipalAccess(accounts, users, memberships, existingWorkspaceIds);
+  return deriveTelegramPrincipalAccess(accounts, users, memberships, existingWorkspaceIds, options);
 }
 
 export async function assertTelegramPrincipalAccess(
   telegramUserId: string,
-  options: { allowNew?: boolean; workspaceId?: string } = {},
-  resolver: (id: string) => Promise<TelegramPrincipalAccess> = resolveTelegramPrincipalAccess,
+  options: { allowNew?: boolean; workspaceId?: string; allowUnlinkedForRelink?: boolean } = {},
+  resolver: (id: string, options?: { allowUnlinkedForRelink?: boolean }) => Promise<TelegramPrincipalAccess> = resolveTelegramPrincipalAccess,
 ): Promise<TelegramPrincipalAccess> {
-  const access = await resolver(telegramUserId);
+  const access = await resolver(telegramUserId, { allowUnlinkedForRelink: options.allowUnlinkedForRelink });
   if (access.state === 'new' && options.allowNew) return access;
   if (access.state !== 'active') throw new AccessRevokedError();
   if (options.workspaceId && !access.activeWorkspaceIds.includes(options.workspaceId)) {

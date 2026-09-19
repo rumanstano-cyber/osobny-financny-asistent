@@ -32,6 +32,40 @@ test('a historical unlinked account is revoked and never mistaken for onboarding
   );
 });
 
+test('an unlinked account may pass only the explicit relink gate while still active', () => {
+  const historical = [account('2026-09-19T08:00:00Z')];
+  assert.equal(
+    deriveTelegramPrincipalAccess(historical, [user()], [membership()], new Set(['workspace-a'])).state,
+    'revoked',
+  );
+  assert.deepEqual(
+    deriveTelegramPrincipalAccess(
+      historical,
+      [user()],
+      [membership()],
+      new Set(['workspace-a']),
+      { allowUnlinkedForRelink: true },
+    ),
+    { state: 'active', userId: 'user-a', activeWorkspaceIds: ['workspace-a'] },
+  );
+});
+
+test('the relink gate cannot revive a suspended user or inactive workspace membership', () => {
+  const historical = [account('2026-09-19T08:00:00Z')];
+  assert.equal(
+    deriveTelegramPrincipalAccess(historical, [user('suspended')], [membership()], new Set(['workspace-a']), { allowUnlinkedForRelink: true }).state,
+    'revoked',
+  );
+  assert.equal(
+    deriveTelegramPrincipalAccess(historical, [user()], [membership('user-a', 'removed', '2026-09-19T08:00:00Z')], new Set(['workspace-a']), { allowUnlinkedForRelink: true }).state,
+    'revoked',
+  );
+  assert.equal(
+    deriveTelegramPrincipalAccess(historical, [user()], [membership()], new Set(), { allowUnlinkedForRelink: true }).state,
+    'revoked',
+  );
+});
+
 test('suspended/deleted users and removed memberships are denied', () => {
   assert.equal(deriveTelegramPrincipalAccess([account()], [user('suspended')], [membership()], new Set(['workspace-a'])).state, 'revoked');
   assert.equal(deriveTelegramPrincipalAccess([account()], [user('active', '2026-09-19T08:00:00Z')], [membership()], new Set(['workspace-a'])).state, 'revoked');
@@ -53,6 +87,20 @@ test('only a truly unknown Telegram ID may enter onboarding', async () => {
   const fresh: TelegramPrincipalAccess = { state: 'new', userId: null, activeWorkspaceIds: [] };
   await assert.doesNotReject(() => assertTelegramPrincipalAccess('new', { allowNew: true }, async () => fresh));
   await assert.rejects(() => assertTelegramPrincipalAccess('new', {}, async () => fresh), AccessRevokedError);
+});
+
+test('explicit relink access is scoped to the linking request', async () => {
+  const relinkable: TelegramPrincipalAccess = { state: 'active', userId: 'user-a', activeWorkspaceIds: ['workspace-a'] };
+  let receivedRelinkOption = false;
+  await assert.doesNotReject(() => assertTelegramPrincipalAccess(
+    'known-unlinked',
+    { allowUnlinkedForRelink: true },
+    async (_id, options) => {
+      receivedRelinkOption = options?.allowUnlinkedForRelink === true;
+      return relinkable;
+    },
+  ));
+  assert.equal(receivedRelinkOption, true);
 });
 
 test('workspace-scoped access fails closed outside active memberships', async () => {

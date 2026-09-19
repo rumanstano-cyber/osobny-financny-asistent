@@ -902,7 +902,11 @@ export function createTelegramBot(): Bot {
         }
         return;
       }
-      await assertTelegramPrincipalAccess(telegramUserId, { allowNew: true });
+      const isLinkCommand = /^\/link(?:@[a-z0-9_]+)?(?:\s|$)/iu.test(ctx.message?.text ?? '');
+      await assertTelegramPrincipalAccess(telegramUserId, {
+        allowNew: true,
+        allowUnlinkedForRelink: isLinkCommand,
+      });
       await enforceCostProtection('telegram_update', `telegram:${telegramUserId}`);
       return next();
     } catch (error) {
@@ -932,7 +936,10 @@ export function createTelegramBot(): Bot {
         await ctx.reply('Vygenerujte párovací kód vo webovom prehľade a pošlite: /link TVOJ_KÓD');
         return;
       }
-      await assertTelegramPrincipalAccess(String(ctx.from.id), { allowNew: true });
+      await assertTelegramPrincipalAccess(String(ctx.from.id), {
+        allowNew: true,
+        allowUnlinkedForRelink: true,
+      });
       const { error } = await supabase.rpc('consume_telegram_link_code', {
         p_telegram_user_id: String(ctx.from.id),
         p_display_name: name(ctx),
