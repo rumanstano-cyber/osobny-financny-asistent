@@ -6,6 +6,7 @@ import { deliverReceiptReminder } from './receipt-purchase-protection-delivery.j
 import { supabase } from './supabase.js';
 import { AccessRevokedError, assertTelegramPrincipalAccess } from './access-control.js';
 import { redactSensitiveLogText, safeErrorLog } from './safe-log.js';
+import { reconcileReceiptStorageOrphans } from './receipt-storage-orphan-cleanup.js';
 
 export type ReceiptPurchaseProtectionDecision = {
   archive_status: 'decision_pending' | 'archived' | 'pending_deletion' | 'cleanup_claimed' | 'storage_deleted';
@@ -187,12 +188,13 @@ async function sendDueReceiptPurchaseProtectionReminders(bot: Bot): Promise<numb
   return delivered;
 }
 
-export async function runReceiptPurchaseProtectionMaintenance(bot: Bot): Promise<{ deletedReceipts: number; sentReminders: number }> {
-  const [deletedReceipts, sentReminders] = await Promise.all([
+export async function runReceiptPurchaseProtectionMaintenance(bot: Bot): Promise<{ deletedReceipts: number; deletedOrphans: number; sentReminders: number }> {
+  const [deletedReceipts, orphanCleanup, sentReminders] = await Promise.all([
     cleanUpExpiredReceiptStorage(),
+    reconcileReceiptStorageOrphans(),
     sendDueReceiptPurchaseProtectionReminders(bot),
   ]);
-  return { deletedReceipts, sentReminders };
+  return { deletedReceipts, deletedOrphans: orphanCleanup.deleted, sentReminders };
 }
 
 let schedulerStarted = false;
