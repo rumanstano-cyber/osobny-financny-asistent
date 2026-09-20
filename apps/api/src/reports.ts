@@ -3,6 +3,7 @@ import { monthlyCommentary, monthlyReportCommentary } from './ai.js';
 import { config } from './config.js';
 import { supabase } from './supabase.js';
 import { AccessRevokedError, assertActiveUserWorkspaceAccess, assertTelegramPrincipalAccess } from './access-control.js';
+import { safeErrorLog } from './safe-log.js';
 
 const reportTimeZone = 'Europe/Bratislava';
 
@@ -374,7 +375,7 @@ async function markDelivery(deliveryId: string, status: 'generated' | 'sent' | '
   const now = new Date().toISOString();
   const patch = status === 'sent' ? { status, generated_at: now, sent_at: now } : { status, generated_at: now };
   const { error } = await supabase.from('report_deliveries').update(patch).eq('id', deliveryId);
-  if (error) console.error('Unable to update report delivery', { deliveryId, error: error.message });
+  if (error) console.error('Unable to update report delivery', { deliveryId, error: safeErrorLog(error) });
 }
 
 /**
@@ -479,7 +480,7 @@ export async function sendMonthlyReports(
               console.info('Telegram monthly report skipped after access revocation', { workspaceId: workspace.id, userId: membership.user_id });
             } else {
               hadDeliveryFailure = true;
-              console.error('Telegram monthly report delivery failed', { workspaceId: workspace.id, error: error instanceof Error ? error.message : String(error) });
+              console.error('Telegram monthly report delivery failed', { workspaceId: workspace.id, error: safeErrorLog(error) });
             }
           }
         }
@@ -499,7 +500,7 @@ export async function sendMonthlyReports(
               console.info('Monthly e-mail report skipped after access revocation', { workspaceId: workspace.id, userId: membership.user_id });
             } else {
               hadDeliveryFailure = true;
-              console.error('Monthly e-mail report delivery failed', { workspaceId: workspace.id, error: error instanceof Error ? error.message : String(error) });
+              console.error('Monthly e-mail report delivery failed', { workspaceId: workspace.id, error: safeErrorLog(error) });
             }
           }
         }
@@ -511,7 +512,7 @@ export async function sendMonthlyReports(
       if (completed) delivered += 1; else failed += 1;
     } catch (error) {
       failed += 1;
-      console.error('Monthly report generation failed', { workspaceId, error: error instanceof Error ? error.message : String(error) });
+      console.error('Monthly report generation failed', { workspaceId, error: safeErrorLog(error) });
     }
   }
   return { delivered, skipped, failed };
@@ -612,7 +613,7 @@ export async function sendWeeklyReports(bot: Bot, referenceDate = new Date()): P
           if (error instanceof AccessRevokedError) {
             console.info('Telegram weekly report skipped after access revocation', { workspaceId: workspace.id, userId: membership.user_id });
           } else {
-            console.error('Telegram weekly report delivery failed', { workspaceId: workspace.id, error: error instanceof Error ? error.message : String(error) });
+            console.error('Telegram weekly report delivery failed', { workspaceId: workspace.id, error: safeErrorLog(error) });
           }
         }
       }
@@ -620,7 +621,7 @@ export async function sendWeeklyReports(bot: Bot, referenceDate = new Date()): P
       if (sent) delivered += 1; else failed += 1;
     } catch (error) {
       failed += 1;
-      console.error('Weekly report generation failed', { workspaceId, error: error instanceof Error ? error.message : String(error) });
+      console.error('Weekly report generation failed', { workspaceId, error: safeErrorLog(error) });
     }
   }
   return { delivered, skipped, failed };

@@ -1,5 +1,6 @@
 import jsQRImport, { type Options, type QRCode } from 'jsqr';
 import { Jimp } from 'jimp';
+import { safeErrorLog } from './safe-log.js';
 
 // jsQR publishes CommonJS runtime code with an ESM-incompatible declaration
 // under NodeNext. Keep the runtime import and make its callable contract explicit.
@@ -156,7 +157,7 @@ async function fetchEkasaReceipt(payload: string, offlinePayload: JsonRecord | n
     console.info('eKasa receipt lookup succeeded', { payloadType: offlinePayload ? 'offline' : isEkasaReceiptId(payload) ? 'receipt_id' : 'url' });
     return responseJson;
   } catch (error) {
-    console.warn('eKasa QR lookup failed', { error: error instanceof Error ? error.message : String(error) });
+    console.warn('eKasa QR lookup failed', { error: safeErrorLog(error) });
     return null;
   }
 }
@@ -174,7 +175,7 @@ async function decodeQrPayload(image: Buffer): Promise<string | null> {
     });
     return result?.data.trim() || null;
   } catch (error) {
-    console.warn('Receipt QR decoding failed', { error: error instanceof Error ? error.message : String(error) });
+    console.warn('Receipt QR decoding failed', { error: safeErrorLog(error) });
     return null;
   }
 }
@@ -192,7 +193,7 @@ export async function readEkasaReceiptQr(image: Buffer): Promise<EkasaReceipt | 
     const receipt = await fetchEkasaReceipt(payload, offlinePayload);
     return receipt ? extractReceipt(receipt, payload) : null;
   } catch (error) {
-    console.warn('eKasa QR parsing failed', { error: error instanceof Error ? error.message : String(error) });
+    console.warn('eKasa QR parsing failed', { error: safeErrorLog(error) });
     return null;
   }
 }

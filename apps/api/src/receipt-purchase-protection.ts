@@ -5,6 +5,7 @@ import { receiptPurchaseProtectionReminderText } from './receipt-purchase-protec
 import { deliverReceiptReminder } from './receipt-purchase-protection-delivery.js';
 import { supabase } from './supabase.js';
 import { AccessRevokedError, assertTelegramPrincipalAccess } from './access-control.js';
+import { redactSensitiveLogText, safeErrorLog } from './safe-log.js';
 
 export type ReceiptPurchaseProtectionDecision = {
   archive_status: 'decision_pending' | 'archived' | 'pending_deletion' | 'cleanup_claimed' | 'storage_deleted';
@@ -67,7 +68,7 @@ async function cleanUpExpiredReceiptStorage(): Promise<number> {
     });
     if (completionError) throw new Error(completionError.message);
     if (storageError) {
-      console.error('Receipt storage cleanup failed', { receiptId: claim.receipt_id, error: storageError.message });
+      console.error('Receipt storage cleanup failed', { receiptId: claim.receipt_id, error: safeErrorLog(storageError) });
       continue;
     }
     completed += 1;
@@ -96,7 +97,7 @@ async function cancelReminderAfterAccessRevocation(reminderId: string): Promise<
       entity_type: 'receipt_purchase_protection_reminder',
       entity_id: reminderId,
     });
-    if (auditError) console.error('Revoked reminder audit event failed', { reminderId, error: auditError.message });
+    if (auditError) console.error('Revoked reminder audit event failed', { reminderId, error: safeErrorLog(auditError) });
   }
   console.info('Receipt purchase protection reminder cancelled after access revocation', { reminderId });
 }
@@ -126,7 +127,7 @@ async function sendDueReceiptPurchaseProtectionReminders(bot: Bot): Promise<numb
       } catch (detailsError) {
         console.error('Receipt purchase protection reminder details failed', {
           reminderId: claim.reminder_id,
-          error: detailsError instanceof Error ? detailsError.message : String(detailsError),
+          error: safeErrorLog(detailsError),
         });
       }
 
@@ -141,7 +142,7 @@ async function sendDueReceiptPurchaseProtectionReminders(bot: Bot): Promise<numb
           if (imagePreparationError instanceof AccessRevokedError) throw imagePreparationError;
           console.error('Receipt purchase protection reminder image preparation failed', {
             reminderId: claim.reminder_id,
-            error: imagePreparationError instanceof Error ? imagePreparationError.message : String(imagePreparationError),
+            error: safeErrorLog(imagePreparationError),
           });
         }
       }
@@ -156,7 +157,7 @@ async function sendDueReceiptPurchaseProtectionReminders(bot: Bot): Promise<numb
       if (delivery.receiptImageError) {
         console.error('Receipt purchase protection reminder image delivery failed', {
           reminderId: claim.reminder_id,
-          error: delivery.receiptImageError,
+          error: redactSensitiveLogText(delivery.receiptImageError),
         });
       }
       const { error: completionError } = await supabase.rpc('complete_receipt_purchase_protection_reminder', {
@@ -173,7 +174,7 @@ async function sendDueReceiptPurchaseProtectionReminders(bot: Bot): Promise<numb
         continue;
       }
       const message = reminderError instanceof Error ? reminderError.message : String(reminderError);
-      console.error('Receipt purchase protection reminder failed', { reminderId: claim.reminder_id, error: message });
+      console.error('Receipt purchase protection reminder failed', { reminderId: claim.reminder_id, error: safeErrorLog(reminderError) });
       const { error: completionError } = await supabase.rpc('complete_receipt_purchase_protection_reminder', {
         p_reminder_id: claim.reminder_id,
         p_succeeded: false,
@@ -201,7 +202,7 @@ export function startReceiptPurchaseProtectionScheduler(bot: Bot): void {
   schedulerStarted = true;
   cron.schedule('7 * * * *', () => {
     void runReceiptPurchaseProtectionMaintenance(bot).catch((error: unknown) => {
-      console.error('Receipt purchase protection maintenance failed', error);
+      console.error('Receipt purchase protection maintenance failed', { error: safeErrorLog(error) });
     });
   }, { timezone: 'Europe/Bratislava', noOverlap: true, name: 'receipt-purchase-protection-maintenance' });
 }

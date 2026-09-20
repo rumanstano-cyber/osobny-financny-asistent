@@ -7,6 +7,7 @@ import { InvalidReceiptExtractionError, describeReceiptOcrFailure } from './ai.j
 import { InvalidReceiptImageError } from './receipt-image.js';
 import { TelegramFileDownloadError } from './telegram-files.js';
 import { ReceiptPersistenceError } from './receipt-errors.js';
+import { safeErrorLog } from './safe-log.js';
 
 export type TelegramMediaJobPayload = {
   version: 1;
@@ -109,11 +110,11 @@ async function drain(): Promise<void> {
       await processJob(job.payload);
       await complete(job.id);
     } catch (error) {
-      console.error('Telegram media job failed', { jobId: job.id, attempt: job.attempt_count, error: error instanceof Error ? error.message : String(error) });
+      console.error('Telegram media job failed', { jobId: job.id, attempt: job.attempt_count, error: safeErrorLog(error) });
       const exhausted = await retryOrFail(job, error);
       if (exhausted && notifyFinalFailure) {
         try { await notifyFinalFailure(job.payload, error); } catch (notificationError) {
-          console.error('Unable to notify user about terminal media job failure', { jobId: job.id, error: notificationError instanceof Error ? notificationError.message : String(notificationError) });
+          console.error('Unable to notify user about terminal media job failure', { jobId: job.id, error: safeErrorLog(notificationError) });
         }
       }
     }
@@ -128,7 +129,7 @@ export function startTelegramMediaJobWorker(
   processJob = handler;
   notifyFinalFailure = finalFailureHandler ?? null;
   void wakeTelegramMediaJobWorker().catch((error: unknown) => {
-    console.error('Unable to start Telegram media worker', error);
+    console.error('Unable to start Telegram media worker', { error: safeErrorLog(error) });
   });
   // A job that was delayed for retry must be picked up even if no new Telegram
   // update arrives. The queue remains durable in Supabase; this small poller
@@ -136,7 +137,7 @@ export function startTelegramMediaJobWorker(
   if (!workerPoller) {
     workerPoller = setInterval(() => {
       void wakeTelegramMediaJobWorker().catch((error: unknown) => {
-        console.error('Unable to poll Telegram media worker', error);
+        console.error('Unable to poll Telegram media worker', { error: safeErrorLog(error) });
       });
     }, 30_000);
     workerPoller.unref();

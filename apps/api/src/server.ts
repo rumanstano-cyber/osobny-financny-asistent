@@ -7,9 +7,29 @@ import { previousClosedWeekReference, startWeeklyReportScheduler } from './weekl
 import { startTelegramMediaJobWorker } from './async-jobs.js';
 import { notifyQueuedTelegramMediaFailure, processQueuedTelegramMedia } from './telegram.js';
 import { runReceiptPurchaseProtectionMaintenance, startReceiptPurchaseProtectionScheduler } from './receipt-purchase-protection.js';
+import { safeErrorLog, safeRequestPath } from './safe-log.js';
 
 const app = Fastify({
-  logger: { level: config.NODE_ENV === 'production' ? 'info' : 'debug' },
+  logger: {
+    level: config.NODE_ENV === 'production' ? 'info' : 'debug',
+    redact: {
+      paths: [
+        'req.headers.authorization',
+        'req.headers.cookie',
+        "req.headers['x-telegram-bot-api-secret-token']",
+        "req.headers['x-internal-cron-secret']",
+        "res.headers['set-cookie']",
+      ],
+      censor: '[REDACTED]',
+    },
+    serializers: {
+      req: (request: { method?: string; url?: string }) => ({
+        method: request.method,
+        url: safeRequestPath(request.url),
+      }),
+      res: (response: { statusCode?: number }) => ({ statusCode: response.statusCode }),
+    },
+  },
   bodyLimit: 256 * 1024,
 });
 const telegramBot = createTelegramBot();
@@ -120,11 +140,11 @@ app.post<{ Body: unknown }>('/api/telegram/webhook', async (request, reply) => {
       startSchedulerOnce();
       return telegramBot.handleUpdate(request.body as TelegramUpdate);
     }).catch((error: unknown) => {
-      app.log.error({ error }, 'Telegram update processing failed after acknowledgement');
+      app.log.error({ error: safeErrorLog(error) }, 'Telegram update processing failed after acknowledgement');
     });
   } catch (error) {
     // Protect against a synchronous failure while scheduling the bot middleware.
-    app.log.error({ error }, 'Telegram update could not be scheduled');
+    app.log.error({ error: safeErrorLog(error) }, 'Telegram update could not be scheduled');
   }
 });
 
@@ -136,7 +156,7 @@ try {
     await ensureTelegramBotInitialized();
     startSchedulerOnce();
   } catch (error) {
-    app.log.error({ error }, 'Telegram bot initialization failed; HTTP service remains available and will retry on a webhook update');
+    app.log.error({ error: safeErrorLog(error) }, 'Telegram bot initialization failed; HTTP service remains available and will retry on a webhook update');
   }
 
   if (config.REGISTER_TELEGRAM_WEBHOOK && telegramInitialization) {
@@ -153,11 +173,11 @@ try {
         // Keep the web service healthy if Telegram is temporarily unavailable.
         // Grammy's error object includes the complete setWebhook payload, which
         // may contain TELEGRAM_WEBHOOK_SECRET. Never serialize that object.
-        app.log.error({ error: error instanceof Error ? error.message : String(error) }, 'Telegram webhook registration failed');
+        app.log.error({ error: safeErrorLog(error) }, 'Telegram webhook registration failed');
       }
     }
   }
 } catch (error) {
-  app.log.error(error);
+  app.log.error({ error: safeErrorLog(error) }, 'Server startup failed');
   process.exit(1);
 }

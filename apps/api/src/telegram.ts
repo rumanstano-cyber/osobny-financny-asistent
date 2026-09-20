@@ -69,6 +69,7 @@ import {
 } from './telegram-media-limits.js';
 import { AccessRevokedError, assertTelegramPrincipalAccess } from './access-control.js';
 import { ReceiptPersistenceError } from './receipt-errors.js';
+import { safeErrorLog } from './safe-log.js';
 
 type RpcResult = { transaction_id: string; workspace_id: string; was_duplicate: boolean };
 type BatchRpcResult = RpcResult & { item_index: number };
@@ -831,7 +832,7 @@ async function handleReceipt(ctx: Context): Promise<void> {
   } catch (error) {
     if (temporaryKey) {
       const { error: cleanupError } = await supabase.storage.from('ofa-receipts').remove([temporaryKey]);
-      if (cleanupError) console.error('Temporary receipt cleanup failed', { updateId: ctx.update.update_id, error: cleanupError.message });
+      if (cleanupError) console.error('Temporary receipt cleanup failed', { updateId: ctx.update.update_id, error: safeErrorLog(cleanupError) });
     }
     if (permanentKey && (
       error instanceof AccessRevokedError
@@ -839,14 +840,13 @@ async function handleReceipt(ctx: Context): Promise<void> {
       || (error instanceof ReceiptPersistenceError && !error.retryable)
     )) {
       const { error: cleanupError } = await supabase.storage.from('ofa-receipts').remove([permanentKey]);
-      if (cleanupError) console.error('Permanent receipt cleanup failed', { updateId: ctx.update.update_id, error: cleanupError.message });
+      if (cleanupError) console.error('Permanent receipt cleanup failed', { updateId: ctx.update.update_id, error: safeErrorLog(cleanupError) });
     }
-    // Pass the Error object itself to preserve its full stack trace in Render.
     console.error('Receipt processing failed', {
       updateId: ctx.update.update_id,
-      telegramUserId: ctx.from.id,
       stage,
-    }, error);
+      error: safeErrorLog(error),
+    });
 
     throw error;
   }
@@ -915,14 +915,14 @@ export async function notifyQueuedTelegramMediaFailure(bot: Bot, payload: Telegr
     if (lookupError) {
       console.error('Unable to verify exhausted receipt object ownership; cleanup skipped', {
         updateId: payload.updateId,
-        error: lookupError.message,
+        error: safeErrorLog(lookupError),
       });
     } else if (!storedFile) {
       const { error: cleanupError } = await supabase.storage.from('ofa-receipts').remove([error.storageKey]);
       if (cleanupError) {
         console.error('Unable to remove exhausted orphan receipt object', {
           updateId: payload.updateId,
-          error: cleanupError.message,
+          error: safeErrorLog(cleanupError),
         });
       }
     }
@@ -971,7 +971,7 @@ export function createTelegramBot(): Bot {
       }
       console.error('Telegram anti-spam check failed closed', {
         updateId: ctx.update.update_id,
-        error: error instanceof Error ? error.message : String(error),
+        error: safeErrorLog(error),
       });
       await notifyRateLimit(ctx, 'Požiadavku sa teraz nepodarilo bezpečne spracovať. Skúste to, prosím, o chvíľu znova.');
     }
@@ -1000,8 +1000,8 @@ export function createTelegramBot(): Bot {
       await ctx.reply('✅ Telegram účet je prepojený s webovým prehľadom.');
     } catch (error) {
       console.error('Telegram account linking failed', {
-        telegramUserId: ctx.from.id,
-        error: error instanceof Error ? error.message : String(error),
+        updateId: ctx.update.update_id,
+        error: safeErrorLog(error),
       });
       await ctx.reply('Párovací kód je neplatný alebo už vypršal. Vygenerujte nový kód vo webovom prehľade.');
     }
@@ -1020,8 +1020,7 @@ export function createTelegramBot(): Bot {
     } catch (error) {
       console.error('Telegram receipt claim selection failed', {
         updateId: ctx.update.update_id,
-        telegramUserId: ctx.from?.id,
-        error: error instanceof Error ? error.message : String(error),
+        error: safeErrorLog(error),
       });
       try { await ctx.reply('❌ Bloček sa nepodarilo odoslať. Skúste výber zopakovať o chvíľu.'); } catch { /* update is already acknowledged */ }
     }
@@ -1051,8 +1050,7 @@ export function createTelegramBot(): Bot {
     } catch (error) {
       console.error('Telegram receipt purchase protection decision failed', {
         updateId: ctx.update.update_id,
-        telegramUserId: ctx.from?.id,
-        error: error instanceof Error ? error.message : String(error),
+        error: safeErrorLog(error),
       });
       try { await ctx.reply('❌ Nastavenie uloženia dokladu sa nepodarilo zmeniť. Skúste to, prosím, o chvíľu znova.'); } catch { /* update is already acknowledged */ }
     }
@@ -1078,8 +1076,7 @@ export function createTelegramBot(): Bot {
     } catch (error) {
       console.error('Telegram transaction void failed', {
         updateId: ctx.update.update_id,
-        telegramUserId: ctx.from?.id,
-        error: error instanceof Error ? error.message : String(error),
+        error: safeErrorLog(error),
       });
       try { await ctx.reply('❌ Zápis sa nepodarilo zrušiť. Skúste to, prosím, o chvíľu znova.'); } catch { /* update is already acknowledged */ }
     }
@@ -1096,7 +1093,7 @@ export function createTelegramBot(): Bot {
     if (!ctx.from || !ctx.chat || messageId === undefined || !match) {
       await acknowledgeBudgetCallback(
         () => ctx.answerCallbackQuery({ text: 'Táto ponuka už nie je aktívna.' }),
-        (error) => console.warn('Telegram budget callback acknowledgement failed', { updateId: ctx.update.update_id, error: error instanceof Error ? error.message : String(error) }),
+        (error) => console.warn('Telegram budget callback acknowledgement failed', { updateId: ctx.update.update_id, error: safeErrorLog(error) }),
       );
       return;
     }
@@ -1112,14 +1109,14 @@ export function createTelegramBot(): Bot {
       if (!claimed) {
         await acknowledgeBudgetCallback(
           () => ctx.answerCallbackQuery({ text: 'Toto kliknutie už bolo spracované.' }),
-          (error) => console.warn('Telegram duplicate budget callback acknowledgement failed', { updateId: ctx.update.update_id, error: error instanceof Error ? error.message : String(error) }),
+          (error) => console.warn('Telegram duplicate budget callback acknowledgement failed', { updateId: ctx.update.update_id, error: safeErrorLog(error) }),
         );
         return;
       }
 
       await acknowledgeBudgetCallback(
         () => ctx.answerCallbackQuery(),
-        (error) => console.warn('Telegram budget callback acknowledgement failed; processing continues', { updateId: ctx.update.update_id, error: error instanceof Error ? error.message : String(error) }),
+        (error) => console.warn('Telegram budget callback acknowledgement failed; processing continues', { updateId: ctx.update.update_id, error: safeErrorLog(error) }),
       );
       // Disable the claimed buttons immediately. A late click is still valid,
       // but the same offer cannot trigger two independent operations.
@@ -1150,7 +1147,7 @@ export function createTelegramBot(): Bot {
         await ctx.reply(`Aký mesačný limit chcete nastaviť pre ${category.name}?\nNapíšte sumu, napr. 300 €.`);
       }
     } catch (error) {
-      console.error('Telegram budget callback failed', { updateId: ctx.update.update_id, telegramUserId: ctx.from?.id, error: error instanceof Error ? error.message : String(error) });
+      console.error('Telegram budget callback failed', { updateId: ctx.update.update_id, error: safeErrorLog(error) });
       try { await ctx.reply('❌ Nastavenie limitu sa nepodarilo zmeniť. Skúste to, prosím, o chvíľu znova.'); } catch { /* update is already acknowledged */ }
     }
   });
@@ -1188,8 +1185,7 @@ export function createTelegramBot(): Bot {
     } catch (error) {
       console.error('Telegram batch transaction selection failed', {
         updateId: ctx.update.update_id,
-        telegramUserId: ctx.from?.id,
-        error: error instanceof Error ? error.message : String(error),
+        error: safeErrorLog(error),
       });
       try { await ctx.reply('❌ Výber položky sa nepodarilo pripraviť. Skúste to, prosím, o chvíľu znova.'); } catch { /* update is already acknowledged */ }
     }
@@ -1209,7 +1205,6 @@ export function createTelegramBot(): Bot {
       }
       console.info('Telegram category correction selected', {
         updateId: ctx.update.update_id,
-        telegramUserId: ctx.from.id,
         transactionId: callback.transactionId,
         categoryId: callback.categoryId,
       });
@@ -1223,8 +1218,7 @@ export function createTelegramBot(): Bot {
     } catch (error) {
       console.error('Telegram category correction selection failed', {
         updateId: ctx.update.update_id,
-        telegramUserId: ctx.from?.id,
-        error: error instanceof Error ? error.message : String(error),
+        error: safeErrorLog(error),
       });
       try { await ctx.reply('❌ Kategóriu sa nepodarilo zmeniť. Skúste to, prosím, o chvíľu znova.'); } catch { /* update is already acknowledged */ }
     }
@@ -1320,8 +1314,7 @@ export function createTelegramBot(): Bot {
         } catch (error) {
           console.error('Telegram category correction request failed', {
             updateId: ctx.update.update_id,
-            telegramUserId: ctx.from.id,
-            error: error instanceof Error ? error.message : String(error),
+            error: safeErrorLog(error),
           });
           await ctx.reply('❌ Opravu kategórie sa nepodarilo pripraviť. Skúste to, prosím, o chvíľu znova.');
         }
@@ -1364,9 +1357,7 @@ export function createTelegramBot(): Bot {
         } catch (claimError) {
           console.error('Telegram receipt claim search failed', {
             updateId: ctx.update.update_id,
-            telegramUserId: ctx.from.id,
-            query,
-            error: claimError instanceof Error ? claimError.message : String(claimError),
+            error: safeErrorLog(claimError),
           });
           await ctx.reply('❌ Bločky sa teraz nepodarilo vyhľadať. Skúste to, prosím, o chvíľu znova.');
         }
@@ -1416,10 +1407,10 @@ export function createTelegramBot(): Bot {
       // them to escape middleware and trigger a Telegram redelivery.
       console.error('Telegram message processing failed', {
         updateId: ctx.update.update_id,
-        error: error instanceof Error ? error.message : String(error),
+        error: safeErrorLog(error),
       });
     }
   });
-  bot.catch((error) => console.error('Telegram update failed', { updateId: error.ctx.update.update_id, message: error.message }));
+  bot.catch((error) => console.error('Telegram update failed', { updateId: error.ctx.update.update_id, error: safeErrorLog(error.error) }));
   return bot;
 }

@@ -1,6 +1,7 @@
 import OpenAI, { toFile } from 'openai';
 import { config } from './config.js';
 import { enforceCostProtection } from './cost-protection.js';
+import { safeErrorLog } from './safe-log.js';
 
 const client = config.OPENAI_API_KEY ? new OpenAI({ apiKey: config.OPENAI_API_KEY, maxRetries: 1, timeout: 45_000 }) : null;
 
@@ -151,7 +152,7 @@ export async function classifyExpenseWithAi(context: string, allowedCategories: 
       ? { categorySlug: parsed.categorySlug, confidence: parsed.confidence, reason: parsed.reason }
       : null;
   } catch (error) {
-    console.warn('AI expense categorization failed', { error: error instanceof Error ? error.message : String(error) });
+    console.warn('AI expense categorization failed', { error: safeErrorLog(error) });
     return null;
   }
 }
@@ -188,7 +189,7 @@ export async function resolveCategoryCorrectionWithAi(
       ? { categoryId: parsed.categoryId, confidence: parsed.confidence }
       : null;
   } catch (error) {
-    console.warn('AI category correction resolution failed', { error: error instanceof Error ? error.message : String(error) });
+    console.warn('AI category correction resolution failed', { error: safeErrorLog(error) });
     return null;
   }
 }

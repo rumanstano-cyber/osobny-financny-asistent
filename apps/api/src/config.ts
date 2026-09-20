@@ -1,5 +1,4 @@
 import { config as loadDotenv } from 'dotenv';
-import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { z } from 'zod';
@@ -29,11 +28,7 @@ process.env.TELEGRAM_BOT_TOKEN = telegramToken;
 const openAiApiKey = normalizeSecret(process.env.OPENAI_API_KEY);
 if (openAiApiKey) process.env.OPENAI_API_KEY = openAiApiKey;
 
-console.info('Environment configuration loaded', {
-  envFile: rootEnvPath,
-  telegramTokenLength: telegramToken.length,
-  telegramTokenSha256Prefix: createHash('sha256').update(telegramToken).digest('hex').slice(0, 12),
-});
+console.info('Environment configuration loaded');
 
 const environmentSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),

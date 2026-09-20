@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import type { Bot } from 'grammy';
 import { sendWeeklyReports } from './reports.js';
+import { safeErrorLog } from './safe-log.js';
 
 const timeZone = 'Europe/Bratislava';
 
@@ -42,7 +43,7 @@ async function runWeeklyReports(bot: Bot): Promise<void> {
     const result = await sendWeeklyReports(bot, previousClosedWeekReference());
     console.info('Weekly report scheduler completed', result);
   } catch (error) {
-    console.error('Weekly report scheduler failed', { error: error instanceof Error ? error.message : String(error) });
+    console.error('Weekly report scheduler failed', { error: safeErrorLog(error) });
   }
 }
 

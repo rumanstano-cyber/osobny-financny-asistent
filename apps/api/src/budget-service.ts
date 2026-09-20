@@ -5,6 +5,7 @@ import {
   type BudgetCallbackIdentity,
 } from './budget-callback.js';
 import { assertActiveUserWorkspaceAccess } from './access-control.js';
+import { safeErrorLog } from './safe-log.js';
 
 const timeZone = 'Europe/Bratislava';
 
@@ -111,7 +112,7 @@ export async function setBudget(context: BudgetContext, category: BudgetCategory
     budgetId = data.id;
   }
   const { error: auditError } = await supabase.from('audit_events').insert({ workspace_id: context.workspaceId, actor_user_id: context.userId, actor_type: 'user', action: existing ? 'budget.updated' : 'budget.created', entity_type: 'budget', entity_id: budgetId, after_data: { category_id: category.id, amount_minor: amountMinor, currency_code: currencyCode, at: now } });
-  if (auditError) console.error('Budget audit event failed', { error: auditError.message });
+  if (auditError) console.error('Budget audit event failed', { error: safeErrorLog(auditError) });
   return (await budgetStatus(context, category.id))!;
 }
 

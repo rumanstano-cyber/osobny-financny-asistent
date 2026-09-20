@@ -1,5 +1,6 @@
 import { classifyExpenseWithAi } from './ai.js';
 import { supabase } from './supabase.js';
+import { safeErrorLog } from './safe-log.js';
 
 type MatchType = 'contains' | 'exact';
 type RuleCategory = { slug: string; name: string; transaction_type: 'expense' | 'income'; is_active: boolean; is_archived: boolean };
@@ -44,7 +45,7 @@ async function loadRules(): Promise<CategoryRule[]> {
     .select('keyword, match_type, category:categories!inner(slug, name, transaction_type, is_active, is_archived)')
     .eq('is_active', true);
   if (error) {
-    console.warn('Category rule lookup failed', { error: error.message });
+    console.warn('Category rule lookup failed', { error: safeErrorLog(error) });
     return cachedRules?.rules ?? [];
   }
   const rules = (data ?? []) as unknown as CategoryRule[];
