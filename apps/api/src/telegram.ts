@@ -786,7 +786,9 @@ async function handleReceipt(ctx: Context): Promise<void> {
       const directory = key.slice(0, slash);
       const fileName = key.slice(slash + 1);
       const { data: existing, error: listError } = await supabase.storage.from('ofa-receipts').list(directory, { search: fileName, limit: 2 });
-      if (listError || !existing?.some((entry) => entry.name === fileName)) throw new Error(move.error.message);
+      if (listError || !existing?.some((entry) => entry.name === fileName)) {
+        throw new ReceiptPersistenceError(move.error.message, true, key);
+      }
       // A prior crashed attempt already moved the identical deterministic object.
       await supabase.storage.from('ofa-receipts').remove([temporaryKey]);
     }
@@ -816,7 +818,7 @@ async function handleReceipt(ctx: Context): Promise<void> {
     if (finalizeError) {
       if (finalizeError.code === '42501') throw new AccessRevokedError();
       const retryable = !['22023', '23505', '23514', 'PGRST202'].includes(finalizeError.code ?? '');
-      throw new ReceiptPersistenceError(finalizeError.message, retryable);
+      throw new ReceiptPersistenceError(finalizeError.message, retryable, key);
     }
     const receipt = (finalizedRows as Array<{ receipt_id: string; was_duplicate: boolean }> | null)?.[0];
     if (!receipt) throw new Error('Receipt finalization returned no result');
@@ -901,6 +903,30 @@ export async function processQueuedTelegramMedia(bot: Bot, payload: TelegramMedi
 
 /** Sends exactly one user-facing message after a receipt job becomes terminal. */
 export async function notifyQueuedTelegramMediaFailure(bot: Bot, payload: TelegramMediaJobPayload, error: unknown): Promise<void> {
+  if (error instanceof ReceiptPersistenceError && error.storageKey) {
+    // Never delete an object that was successfully finalized and merely lost
+    // its response. A missing metadata row proves the deterministic object is
+    // an orphan left by an exhausted attempt and is safe to remove.
+    const { data: storedFile, error: lookupError } = await supabase
+      .from('stored_files')
+      .select('id')
+      .eq('storage_key', error.storageKey)
+      .maybeSingle();
+    if (lookupError) {
+      console.error('Unable to verify exhausted receipt object ownership; cleanup skipped', {
+        updateId: payload.updateId,
+        error: lookupError.message,
+      });
+    } else if (!storedFile) {
+      const { error: cleanupError } = await supabase.storage.from('ofa-receipts').remove([error.storageKey]);
+      if (cleanupError) {
+        console.error('Unable to remove exhausted orphan receipt object', {
+          updateId: payload.updateId,
+          error: cleanupError.message,
+        });
+      }
+    }
+  }
   if (payload.kind !== 'receipt' || error instanceof AccessRevokedError) return;
   const message = error instanceof CostLimitExceededError
     ? 'Spracovanie bločkov je dočasne vyťažené. Skúste to, prosím, neskôr.'
