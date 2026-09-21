@@ -8,6 +8,7 @@ import { startTelegramMediaJobWorker } from './async-jobs.js';
 import { notifyQueuedTelegramMediaFailure, processQueuedTelegramMedia } from './telegram.js';
 import { runReceiptPurchaseProtectionMaintenance, startReceiptPurchaseProtectionScheduler } from './receipt-purchase-protection.js';
 import { safeErrorLog, safeRequestPath } from './safe-log.js';
+import { buildOperationalWatchdogSnapshot, hasValidMonitoringSecret } from './monitoring.js';
 
 const app = Fastify({
   logger: {
@@ -18,6 +19,7 @@ const app = Fastify({
         'req.headers.cookie',
         "req.headers['x-telegram-bot-api-secret-token']",
         "req.headers['x-internal-cron-secret']",
+        "req.headers['x-monitoring-watchdog-secret']",
         "res.headers['set-cookie']",
       ],
       censor: '[REDACTED]',
@@ -93,6 +95,14 @@ app.addHook('onRequest', async (request, reply) => {
 });
 
 app.get('/health', async () => ({ status: 'ok' }));
+
+app.get('/internal/monitoring/snapshot', async (request, reply) => {
+  if (!config.MONITORING_WATCHDOG_SECRET) return reply.code(404).send({ error: 'not_found' });
+  if (!hasValidMonitoringSecret(config.MONITORING_WATCHDOG_SECRET, request.headers['x-monitoring-watchdog-secret'])) {
+    return reply.code(401).send({ error: 'unauthorized' });
+  }
+  return buildOperationalWatchdogSnapshot();
+});
 
 app.post<{ Params: { telegramUserId: string } }>('/internal/reports/monthly/:telegramUserId', async (request, reply) => {
   if (request.headers['x-internal-cron-secret'] !== config.INTERNAL_CRON_SECRET) return reply.code(401).send({ error: 'unauthorized' });

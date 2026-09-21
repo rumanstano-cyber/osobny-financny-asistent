@@ -1,0 +1,58 @@
+name: Production operational watchdog
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+  id-token: write
+
+concurrency:
+  group: production-operational-watchdog
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: eu-north-1
+  BASE_URL: https://osobny-financny-asistent-1.onrender.com
+  WATCHDOG_ACTIVATED_AT: ${{ vars.WATCHDOG_ACTIVATED_AT }}
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Obtain short-lived AWS credentials
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502
+        with:
+          role-to-assume: arn:aws:iam::521390384594:role/OFAProductionWatchdogGitHubRole
+          role-session-name: ofa-production-watchdog
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Load the dedicated watchdog secret
+        shell: bash
+        run: |
+          set -euo pipefail
+          raw="$(aws secretsmanager get-secret-value \
+            --secret-id 'ofa/prod/watchdog-source' \
+            --query SecretString \
+            --output text)"
+          value="$(RAW_SECRET="$raw" node -e '
+            const parsed = JSON.parse(process.env.RAW_SECRET);
+            const value = parsed.MONITORING_WATCHDOG_SECRET;
+            if (typeof value !== "string" || value.length < 32) process.exit(1);
+            process.stdout.write(value);
+          ')"
+          echo "::add-mask::$value"
+          printf 'MONITORING_WATCHDOG_SECRET=%s\n' "$value" >> "$GITHUB_ENV"
+
+      - name: Check production operational state
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node apps/api/scripts/production-watchdog.mjs

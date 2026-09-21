@@ -7,6 +7,7 @@ test('redacts credentials, signed URL parameters, linking codes and contact data
     'Authorization: Bearer top-secret-token',
     'OPENAI_API_KEY=sk-sensitive',
     'TELEGRAM_WEBHOOK_SECRET="webhook-sensitive"',
+    'MONITORING_WATCHDOG_SECRET=watchdog-sensitive',
     'https://api.telegram.org/bot123:secret/getMe',
     'https://storage.example/object?token=signed-token&x-amz-signature=signature-value',
     '{"password":"secret","cookie":"session=value"}',
@@ -14,7 +15,7 @@ test('redacts credentials, signed URL parameters, linking codes and contact data
     'customer@example.com',
   ].join(' ');
   const redacted = redactSensitiveLogText(sensitive, 10_000);
-  for (const secret of ['top-secret-token', 'sk-sensitive', 'webhook-sensitive', '123:secret', 'signed-token', 'signature-value', 'session=value', 'AABBCCDDEEFF00112233445566778899', 'customer@example.com']) {
+  for (const secret of ['top-secret-token', 'sk-sensitive', 'webhook-sensitive', 'watchdog-sensitive', '123:secret', 'signed-token', 'signature-value', 'session=value', 'AABBCCDDEEFF00112233445566778899', 'customer@example.com']) {
     assert.equal(redacted.includes(secret), false, secret);
   }
   assert.match(redacted, /\[REDACTED/u);
