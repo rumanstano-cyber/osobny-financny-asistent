@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { previousClosedMonthReference, sendTelegramWithRetry, summarizeReportTransactions, weeklyReportPeriod } from './reports.js';
+import { isReportChannelDelivered, previousClosedMonthReference, sendTelegramWithRetry, summarizeReportTransactions, weeklyReportPeriod } from './reports.js';
 import { previousClosedWeekReference, shouldCatchUpWeeklyReport } from './weekly-report-scheduler.js';
 
 test('weekly report period uses the closed Monday-to-Monday Bratislava week across the spring DST change', () => {
@@ -95,4 +95,17 @@ test('Telegram delivery fails only after the configured retry attempts', async (
     /Telegram unavailable/,
   );
   assert.equal(attempts, 3);
+});
+
+test('a channel already persisted as delivered is skipped by report retry', () => {
+  const snapshot = {
+    delivery_channels: {
+      'telegram:user-a': true,
+      'email:user-a': true,
+    },
+  };
+
+  assert.equal(isReportChannelDelivered(snapshot, 'telegram:user-a'), true);
+  assert.equal(isReportChannelDelivered(snapshot, 'email:user-a'), true);
+  assert.equal(isReportChannelDelivered(snapshot, 'telegram:user-b'), false);
 });

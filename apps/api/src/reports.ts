@@ -16,7 +16,8 @@ type UserEmailRow = { id: string; email: string | null };
 type CurrentMonthReportLookup = { report: MonthlyReport; unavailableMessage: null } | { report: null; unavailableMessage: string };
 export type ReportPeriod = { start: Date; end: Date; label: string };
 type ReportDeliveryType = 'monthly_summary' | 'weekly_summary';
-type ReportDelivery = { id: string; dataSnapshot: Record<string, unknown> };
+type ReportDelivery = { id: string; dataSnapshot: Record<string, unknown>; attemptCount: number };
+type ReportDeliveryClaimRow = { delivery_id: string; data_snapshot: unknown; attempt_count: number };
 
 export type CategorySpend = { name: string; slug: string; amountMinor: number };
 export type MonthlyReport = {
@@ -286,6 +287,10 @@ function deliveredChannels(snapshot: Record<string, unknown>): Record<string, tr
   return Object.fromEntries(Object.entries(channels).filter(([, delivered]) => delivered === true)) as Record<string, true>;
 }
 
+export function isReportChannelDelivered(snapshot: unknown, channel: string): boolean {
+  return deliveredChannels(deliverySnapshot(snapshot))[channel] === true;
+}
+
 async function claimReportDelivery(workspace: WorkspaceRow, report: MonthlyReport, reportType: ReportDeliveryType): Promise<ReportDelivery | null> {
   const snapshot = {
     incomeMinor: report.incomeMinor,
@@ -294,43 +299,23 @@ async function claimReportDelivery(workspace: WorkspaceRow, report: MonthlyRepor
     categories: report.categories,
     delivery_channels: {},
   };
-  const { data, error } = await supabase
-    .from('report_deliveries')
-    .insert({
-      workspace_id: workspace.id,
-      report_type: reportType,
-      period_start: report.periodStart.toISOString(),
-      period_end: report.periodEnd.toISOString(),
-      base_currency_code: workspace.base_currency_code,
-      data_snapshot: snapshot,
-      status: 'queued',
-    })
-    .select('id, data_snapshot')
-    .single();
-  if (error?.code === '23505') {
-    // A scheduled report may be retried only after a confirmed delivery failure.
-    // The conditional update makes a concurrent scheduler instance lose safely.
-    const { data: existing, error: existingError } = await supabase
-      .from('report_deliveries')
-      .select('id, status, data_snapshot')
-      .eq('workspace_id', workspace.id)
-      .eq('report_type', reportType)
-      .eq('period_start', report.periodStart.toISOString())
-      .maybeSingle();
-    if (existingError) throw new Error(existingError.message);
-    if (!existing || existing.status !== 'failed') return null;
-    const { data: reclaimed, error: reclaimError } = await supabase
-      .from('report_deliveries')
-      .update({ status: 'queued', generated_at: null })
-      .eq('id', existing.id)
-      .eq('status', 'failed')
-      .select('id, data_snapshot')
-      .maybeSingle();
-    if (reclaimError) throw new Error(reclaimError.message);
-    return reclaimed ? { id: reclaimed.id as string, dataSnapshot: deliverySnapshot(reclaimed.data_snapshot) } : null;
-  }
-  if (error || !data) throw new Error(error?.message ?? 'Unable to create report delivery');
-  return { id: data.id as string, dataSnapshot: deliverySnapshot(data.data_snapshot) };
+  const { data, error } = await supabase.rpc('claim_scheduled_report_delivery', {
+    p_workspace_id: workspace.id,
+    p_report_type: reportType,
+    p_period_start: report.periodStart.toISOString(),
+    p_period_end: report.periodEnd.toISOString(),
+    p_base_currency_code: workspace.base_currency_code,
+    p_data_snapshot: snapshot,
+    p_lease_interval: '15 minutes',
+  });
+  if (error) throw new Error(error.message);
+  const claimed = ((data as ReportDeliveryClaimRow[] | null) ?? [])[0];
+  if (!claimed) return null;
+  return {
+    id: claimed.delivery_id,
+    dataSnapshot: deliverySnapshot(claimed.data_snapshot),
+    attemptCount: claimed.attempt_count,
+  };
 }
 
 async function markChannelDelivered(delivery: ReportDelivery, channel: string): Promise<ReportDelivery> {
@@ -342,10 +327,11 @@ async function markChannelDelivered(delivery: ReportDelivery, channel: string): 
     .from('report_deliveries')
     .update({ data_snapshot: nextSnapshot })
     .eq('id', delivery.id)
+    .eq('status', 'generated')
     .select('id, data_snapshot')
-    .single();
+    .maybeSingle();
   if (error || !data) throw new Error(error?.message ?? 'Unable to persist report delivery channel state');
-  return { id: data.id as string, dataSnapshot: deliverySnapshot(data.data_snapshot) };
+  return { ...delivery, id: data.id as string, dataSnapshot: deliverySnapshot(data.data_snapshot) };
 }
 
 function wait(milliseconds: number): Promise<void> {
@@ -371,11 +357,26 @@ export async function sendTelegramWithRetry<T>(
   throw lastError;
 }
 
-async function markDelivery(deliveryId: string, status: 'generated' | 'sent' | 'failed'): Promise<void> {
-  const now = new Date().toISOString();
-  const patch = status === 'sent' ? { status, generated_at: now, sent_at: now } : { status, generated_at: now };
-  const { error } = await supabase.from('report_deliveries').update(patch).eq('id', deliveryId);
-  if (error) console.error('Unable to update report delivery', { deliveryId, error: safeErrorLog(error) });
+async function completeReportDelivery(
+  deliveryId: string,
+  succeeded: boolean,
+  errorMessage: string | null,
+  cancelled = false,
+): Promise<void> {
+  const { data, error } = await supabase.rpc('complete_scheduled_report_delivery', {
+    p_delivery_id: deliveryId,
+    p_succeeded: succeeded,
+    p_error: errorMessage,
+    p_cancelled: cancelled,
+  });
+  if (error || data !== true) throw new Error(error?.message ?? 'Unable to complete report delivery');
+}
+
+async function cancelInaccessibleReportDeliveries(reportType: ReportDeliveryType): Promise<void> {
+  const { error } = await supabase.rpc('cancel_inaccessible_scheduled_report_deliveries', {
+    p_report_type: reportType,
+  });
+  if (error) throw new Error(error.message);
 }
 
 /**
@@ -389,6 +390,8 @@ export async function sendMonthlyReports(
   referenceDate = new Date(),
   workspaceId?: string,
 ): Promise<{ delivered: number; skipped: number; failed: number }> {
+  await cancelInaccessibleReportDeliveries('monthly_summary');
+
   const { data: accounts, error: accountError } = await supabase
     .from('channel_accounts')
     .select('user_id, external_account_id')
@@ -461,15 +464,12 @@ export async function sendMonthlyReports(
       const chartUrl = quickChartUrl(report);
       // A successful channel is persisted independently. On a later retry it
       // must remain successful even when there is nothing left to send.
-      const hasEligibleChannel = workspaceMemberships.some((membership) =>
-        telegramAccountByUser.has(membership.user_id)
-        || (emailDeliveryEnabled && emailByUserId.has(membership.user_id)),
-      );
       let hadDeliveryFailure = false;
+      const revokedUserIds = new Set<string>();
       for (const membership of workspaceMemberships) {
         const account = telegramAccountByUser.get(membership.user_id);
         const telegramChannel = `telegram:${membership.user_id}`;
-        if (account && !deliveredChannels(delivery.dataSnapshot)[telegramChannel]) {
+        if (account && !isReportChannelDelivered(delivery.dataSnapshot, telegramChannel)) {
           try {
             await assertActiveUserWorkspaceAccess(membership.user_id, workspace.id);
             await assertTelegramPrincipalAccess(account.external_account_id, { workspaceId: workspace.id });
@@ -477,6 +477,7 @@ export async function sendMonthlyReports(
             delivery = await markChannelDelivered(delivery, telegramChannel);
           } catch (error) {
             if (error instanceof AccessRevokedError) {
+              revokedUserIds.add(membership.user_id);
               console.info('Telegram monthly report skipped after access revocation', { workspaceId: workspace.id, userId: membership.user_id });
             } else {
               hadDeliveryFailure = true;
@@ -487,7 +488,7 @@ export async function sendMonthlyReports(
 
         const email = emailByUserId.get(membership.user_id);
         const emailChannel = `email:${membership.user_id}`;
-        if (email && emailDeliveryEnabled && !deliveredChannels(delivery.dataSnapshot)[emailChannel]) {
+        if (email && emailDeliveryEnabled && !isReportChannelDelivered(delivery.dataSnapshot, emailChannel)) {
           try {
             await assertActiveUserWorkspaceAccess(membership.user_id, workspace.id);
             if (await sendReportEmail(report, commentary, chartUrl, email)) {
@@ -497,6 +498,7 @@ export async function sendMonthlyReports(
             }
           } catch (error) {
             if (error instanceof AccessRevokedError) {
+              revokedUserIds.add(membership.user_id);
               console.info('Monthly e-mail report skipped after access revocation', { workspaceId: workspace.id, userId: membership.user_id });
             } else {
               hadDeliveryFailure = true;
@@ -505,11 +507,25 @@ export async function sendMonthlyReports(
           }
         }
       }
-      const pendingTelegram = workspaceMemberships.some((membership) => telegramAccountByUser.has(membership.user_id) && !deliveredChannels(delivery.dataSnapshot)[`telegram:${membership.user_id}`]);
-      const pendingEmail = emailDeliveryEnabled && workspaceMemberships.some((membership) => emailByUserId.has(membership.user_id) && !deliveredChannels(delivery.dataSnapshot)[`email:${membership.user_id}`]);
-      const completed = hasEligibleChannel && !hadDeliveryFailure && !pendingTelegram && !pendingEmail;
-      await markDelivery(delivery.id, completed ? 'sent' : 'failed');
-      if (completed) delivered += 1; else failed += 1;
+      const activeRecipients = workspaceMemberships.filter((membership) => !revokedUserIds.has(membership.user_id));
+      const pendingTelegram = activeRecipients.some((membership) => telegramAccountByUser.has(membership.user_id) && !isReportChannelDelivered(delivery.dataSnapshot, `telegram:${membership.user_id}`));
+      const pendingEmail = emailDeliveryEnabled && activeRecipients.some((membership) => emailByUserId.has(membership.user_id) && !isReportChannelDelivered(delivery.dataSnapshot, `email:${membership.user_id}`));
+      const deliveredAnyChannel = Object.keys(deliveredChannels(delivery.dataSnapshot)).length > 0;
+      const hasActiveEligibleChannel = activeRecipients.some((membership) =>
+        telegramAccountByUser.has(membership.user_id)
+        || (emailDeliveryEnabled && emailByUserId.has(membership.user_id)),
+      );
+      const cancelled = !deliveredAnyChannel && !hasActiveEligibleChannel;
+      const completed = deliveredAnyChannel && !hadDeliveryFailure && !pendingTelegram && !pendingEmail;
+      await completeReportDelivery(
+        delivery.id,
+        completed,
+        completed ? null : cancelled ? 'No active report recipient' : 'One or more monthly report channels failed',
+        cancelled,
+      );
+      if (completed) delivered += 1;
+      else if (cancelled) skipped += 1;
+      else failed += 1;
     } catch (error) {
       failed += 1;
       console.error('Monthly report generation failed', { workspaceId, error: safeErrorLog(error) });
@@ -544,6 +560,8 @@ function weeklyTelegramCaption(report: MonthlyReport): string {
 
 /** Delivers one short closed-week report to every active Telegram member. */
 export async function sendWeeklyReports(bot: Bot, referenceDate = new Date()): Promise<{ delivered: number; skipped: number; failed: number }> {
+  await cancelInaccessibleReportDeliveries('weekly_summary');
+
   const { data: accounts, error: accountError } = await supabase
     .from('channel_accounts')
     .select('user_id, external_account_id')
@@ -572,7 +590,6 @@ export async function sendWeeklyReports(bot: Bot, referenceDate = new Date()): P
   const membershipsByWorkspace = new Map<string, MembershipRow[]>();
   for (const membership of candidateMemberships) {
     if (!activeUserIds.has(membership.user_id)) continue;
-    if (!telegramAccountByUser.has(membership.user_id)) continue;
     const current = membershipsByWorkspace.get(membership.workspace_id) ?? [];
     current.push(membership);
     membershipsByWorkspace.set(membership.workspace_id, current);
@@ -595,30 +612,51 @@ export async function sendWeeklyReports(bot: Bot, referenceDate = new Date()): P
     if (!workspace) continue;
     try {
       const report = await buildCurrentWeekReport(workspace.id, workspace.base_currency_code, referenceDate);
-      const delivery = await claimReportDelivery(workspace, report, 'weekly_summary');
+      let delivery = await claimReportDelivery(workspace, report, 'weekly_summary');
       if (!delivery) {
         skipped += 1;
         continue;
       }
-      let sent = false;
+      let hadDeliveryFailure = false;
+      const revokedUserIds = new Set<string>();
       for (const membership of workspaceMemberships) {
         const account = telegramAccountByUser.get(membership.user_id);
         if (!account) continue;
+        const telegramChannel = `telegram:${membership.user_id}`;
+        if (isReportChannelDelivered(delivery.dataSnapshot, telegramChannel)) continue;
         try {
           await assertActiveUserWorkspaceAccess(membership.user_id, workspace.id);
           await assertTelegramPrincipalAccess(account.external_account_id, { workspaceId: workspace.id });
           await sendTelegramWithRetry(() => bot.api.sendMessage(account.external_account_id, weeklyTelegramCaption(report), { parse_mode: 'HTML' }));
-          sent = true;
+          delivery = await markChannelDelivered(delivery, telegramChannel);
         } catch (error) {
           if (error instanceof AccessRevokedError) {
+            revokedUserIds.add(membership.user_id);
             console.info('Telegram weekly report skipped after access revocation', { workspaceId: workspace.id, userId: membership.user_id });
           } else {
+            hadDeliveryFailure = true;
             console.error('Telegram weekly report delivery failed', { workspaceId: workspace.id, error: safeErrorLog(error) });
           }
         }
       }
-      await markDelivery(delivery.id, sent ? 'sent' : 'failed');
-      if (sent) delivered += 1; else failed += 1;
+      const activeRecipients = workspaceMemberships.filter((membership) => !revokedUserIds.has(membership.user_id));
+      const pendingTelegram = activeRecipients.some((membership) =>
+        telegramAccountByUser.has(membership.user_id)
+        && !isReportChannelDelivered(delivery.dataSnapshot, `telegram:${membership.user_id}`),
+      );
+      const deliveredAnyChannel = Object.keys(deliveredChannels(delivery.dataSnapshot)).length > 0;
+      const hasActiveEligibleChannel = activeRecipients.some((membership) => telegramAccountByUser.has(membership.user_id));
+      const cancelled = !deliveredAnyChannel && !hasActiveEligibleChannel;
+      const completed = deliveredAnyChannel && !hadDeliveryFailure && !pendingTelegram;
+      await completeReportDelivery(
+        delivery.id,
+        completed,
+        completed ? null : cancelled ? 'No active report recipient' : 'One or more weekly report channels failed',
+        cancelled,
+      );
+      if (completed) delivered += 1;
+      else if (cancelled) skipped += 1;
+      else failed += 1;
     } catch (error) {
       failed += 1;
       console.error('Weekly report generation failed', { workspaceId, error: safeErrorLog(error) });
