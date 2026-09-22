@@ -10,7 +10,7 @@ let fonts: Promise<[Awaited<ReturnType<typeof loadFont>>, Awaited<ReturnType<typ
 function chartLabel(value: string): string {
   // The bundled bitmap font lacks some Slovak glyphs. The exact category names
   // remain in the Telegram caption and HTML table; this is only the image label.
-  return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\x20-\x7e]/g, '').slice(0, 28);
+  return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\x20-\x7e]/g, '').slice(0, 28) || 'Kategoria';
 }
 
 /** Render a report entirely in-process; category names and amounts never enter a chart URL. */

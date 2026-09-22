@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Jimp } from 'jimp';
+import { InputFile } from 'grammy';
 import { renderMonthlyChart } from './report-chart.js';
 import { reportEmailPayload, type MonthlyReport } from './reports.js';
 
@@ -29,6 +30,8 @@ test('monthly chart is a local PNG with distinct category slices and no network 
     assert.equal(image.height, 600);
     assert.equal(image.getPixelColor(275, 200), 0x2563ebff);
     assert.equal(image.getPixelColor(100, 320), 0x16a34aff);
+    const telegramPhoto = new InputFile(png, 'mesacny-graf.png');
+    assert.equal(telegramPhoto.filename, 'mesacny-graf.png');
   } finally {
     globalThis.fetch = previousFetch;
   }
@@ -53,4 +56,14 @@ test('email category names are escaped and an empty month still renders a local 
   const payload = reportEmailPayload(unsafeReport, '', png, 'recipient@example.invalid', 'sender@example.invalid');
   assert.match(payload.html, /&lt;script&gt;/u);
   assert.doesNotMatch(payload.html, /<script>/u);
+});
+
+test('long and nonstandard category names remain safe for local rendering and exact in the email table', async () => {
+  const unusualName = 'Dlhá kategória s diakritikou ☕ a ďalším názvom <&>';
+  const unusualReport = { ...report, categories: [{ name: unusualName, slug: 'custom', amountMinor: 15_000 }] };
+  const png = await renderMonthlyChart(unusualReport);
+  assert.equal(png.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+  const payload = reportEmailPayload(unusualReport, '', png, 'recipient@example.invalid', 'sender@example.invalid');
+  assert.match(payload.html, /Dlhá kategória s diakritikou ☕ a ďalším názvom &lt;&amp;&gt;/u);
+  assert.doesNotMatch(payload.html, /quickchart\.io/u);
 });
