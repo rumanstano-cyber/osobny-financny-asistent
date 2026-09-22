@@ -9,6 +9,7 @@ import { notifyQueuedTelegramMediaFailure, processQueuedTelegramMedia } from './
 import { runReceiptPurchaseProtectionMaintenance, startReceiptPurchaseProtectionScheduler } from './receipt-purchase-protection.js';
 import { safeErrorLog, safeRequestPath } from './safe-log.js';
 import { buildOperationalWatchdogSnapshot, hasValidMonitoringSecret } from './monitoring.js';
+import { registerHttpSecurity } from './http-security.js';
 
 const app = Fastify({
   logger: {
@@ -68,30 +69,9 @@ function startSchedulerOnce(): void {
   reportSchedulersStarted = true;
 }
 
-function isAllowedCorsOrigin(origin: string): boolean {
-  try {
-    const url = new URL(origin);
-    const isLocalhost = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
-    const isRenderDomain = url.protocol === 'https:' && url.hostname.endsWith('.onrender.com');
-    return isRenderDomain || (isLocalhost && (url.protocol === 'http:' || url.protocol === 'https:'));
-  } catch {
-    return false;
-  }
-}
-
-app.addHook('onRequest', async (request, reply) => {
-  const origin = request.headers.origin;
-  if (origin && isAllowedCorsOrigin(origin)) {
-    reply.header('access-control-allow-origin', origin);
-    reply.header('vary', 'Origin');
-    reply.header('access-control-allow-methods', 'GET, POST, OPTIONS');
-    reply.header('access-control-allow-headers', 'Content-Type, Authorization, X-Internal-Cron-Secret');
-  }
-
-  if (request.method === 'OPTIONS') {
-    if (!origin || !isAllowedCorsOrigin(origin)) return reply.code(403).send({ error: 'CORS origin not allowed' });
-    return reply.code(204).send();
-  }
+registerHttpSecurity(app, {
+  nodeEnv: config.NODE_ENV,
+  webOrigin: config.WEB_APP_URL,
 });
 
 app.get('/health', async () => ({ status: 'ok' }));
