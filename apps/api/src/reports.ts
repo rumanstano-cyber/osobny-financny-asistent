@@ -1,9 +1,10 @@
-import type { Bot } from 'grammy';
+import { InputFile, type Bot } from 'grammy';
 import { monthlyCommentary, monthlyReportCommentary } from './ai.js';
 import { config } from './config.js';
 import { supabase } from './supabase.js';
 import { AccessRevokedError, assertActiveUserWorkspaceAccess, assertTelegramPrincipalAccess } from './access-control.js';
 import { safeErrorLog } from './safe-log.js';
+import { renderMonthlyChart } from './report-chart.js';
 
 const reportTimeZone = 'Europe/Bratislava';
 
@@ -180,49 +181,6 @@ function reportNumbers(report: MonthlyReport, previousExpenseMinor?: number): st
   return `Mesiac: ${report.monthLabel}. Príjmy: ${formatCurrency(report.incomeMinor, report.currencyCode)}. Výdavky: ${formatCurrency(report.expenseMinor, report.currencyCode)}. Bilancia: ${formatCurrency(report.balanceMinor, report.currencyCode)}.${trend} Top kategórie: ${categories}.`;
 }
 
-function quickChartUrl(report: MonthlyReport): string {
-  const categories = report.categories.slice(0, 8);
-  const total = categories.reduce((sum, item) => sum + item.amountMinor, 0);
-  const chart = {
-    type: 'pie',
-    data: {
-      labels: categories.map((item) => {
-        const share = total > 0 ? Math.round((item.amountMinor / total) * 100) : 0;
-        return `${item.name} (${share} %)`;
-      }),
-      datasets: [{
-        data: categories.map((item) => item.amountMinor / 100),
-        backgroundColor: ['#2563eb', '#16a34a', '#f59e0b', '#dc2626', '#7c3aed', '#0891b2', '#db2777', '#65a30d'],
-        borderColor: '#ffffff',
-        borderWidth: 4,
-      }],
-    },
-    options: {
-      layout: { padding: { top: 8, right: 8, bottom: 4, left: 8 } },
-      plugins: {
-        title: { display: true, text: `Výdavky podľa kategórií – ${report.monthLabel}`, color: '#ffffff', font: { size: 26, weight: 'bold' }, padding: { top: 8, bottom: 16 } },
-        legend: { position: 'bottom', labels: { color: '#ffffff', boxWidth: 20, padding: 20, font: { size: 17, weight: 'bold' } } },
-        datalabels: {
-          color: '#ffffff',
-          textStrokeColor: 'rgba(15, 23, 42, 0.75)',
-          textStrokeWidth: 3,
-          font: { size: 20, weight: 'bold' },
-          textAlign: 'center',
-          formatter: '__OFA_PIE_LABEL_FORMATTER__',
-        },
-      },
-    },
-  };
-  // QuickChart accepts JavaScript callbacks in its chart configuration. Keep
-  // the callback separate from JSON serialization so it remains executable,
-  // while all data values are still safely JSON-encoded.
-  const chartConfig = JSON.stringify(chart).replace(
-    '"__OFA_PIE_LABEL_FORMATTER__"',
-    'function(value, context) { var values = context.dataset.data; var total = values.reduce(function(sum, item) { return sum + Number(item); }, 0); var share = total > 0 ? Math.round((Number(value) / total) * 100) : 0; return [share + "%", Number(value).toFixed(2) + " €"]; }',
-  );
-  return `https://quickchart.io/chart?width=1000&height=600&devicePixelRatio=2&backgroundColor=%23121212&version=4&c=${encodeURIComponent(chartConfig)}`;
-}
-
 function telegramCaption(report: MonthlyReport, commentary: string): string {
   const categoryLines = report.categories.slice(0, 8).map((item) => {
     const share = report.expenseMinor > 0 ? Math.round((item.amountMinor / report.expenseMinor) * 100) : 0;
@@ -249,9 +207,19 @@ function htmlEscape(value: string): string {
   return value.replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character] ?? character);
 }
 
-function reportEmailHtml(report: MonthlyReport, commentary: string, chartUrl: string): string {
+export function reportEmailHtml(report: MonthlyReport, commentary: string): string {
   const categoryRows = report.categories.map((item) => `<tr><td>${htmlEscape(item.name)}</td><td style="text-align:right">${htmlEscape(formatCurrency(item.amountMinor, report.currencyCode))}</td></tr>`).join('');
-  return `<!doctype html><html><body style="font-family:Arial,sans-serif;color:#111827"><h1>Mesačný prehľad – ${htmlEscape(report.monthLabel)}</h1><img src="${htmlEscape(chartUrl)}" alt="Graf výdavkov" style="max-width:100%;height:auto"><table style="border-collapse:collapse;margin:16px 0"><tr><td>Príjmy</td><td>${htmlEscape(formatCurrency(report.incomeMinor, report.currencyCode))}</td></tr><tr><td>Výdavky</td><td>${htmlEscape(formatCurrency(report.expenseMinor, report.currencyCode))}</td></tr><tr><td><strong>Bilancia</strong></td><td><strong>${htmlEscape(formatCurrency(report.balanceMinor, report.currencyCode))}</strong></td></tr></table><p>${htmlEscape(commentary)}</p><h2>Výdavky podľa kategórií</h2><table style="border-collapse:collapse">${categoryRows || '<tr><td>Bez výdavkov</td><td></td></tr>'}</table></body></html>`;
+  return `<!doctype html><html><body style="font-family:Arial,sans-serif;color:#111827"><h1>Mesačný prehľad – ${htmlEscape(report.monthLabel)}</h1><img src="cid:ofa-monthly-chart" alt="Graf výdavkov" style="max-width:100%;height:auto"><table style="border-collapse:collapse;margin:16px 0"><tr><td>Príjmy</td><td>${htmlEscape(formatCurrency(report.incomeMinor, report.currencyCode))}</td></tr><tr><td>Výdavky</td><td>${htmlEscape(formatCurrency(report.expenseMinor, report.currencyCode))}</td></tr><tr><td><strong>Bilancia</strong></td><td><strong>${htmlEscape(formatCurrency(report.balanceMinor, report.currencyCode))}</strong></td></tr></table><p>${htmlEscape(commentary)}</p><h2>Výdavky podľa kategórií</h2><table style="border-collapse:collapse">${categoryRows || '<tr><td>Bez výdavkov</td><td></td></tr>'}</table></body></html>`;
+}
+
+export function reportEmailPayload(report: MonthlyReport, commentary: string, chartImage: Buffer, recipient: string, sender: string) {
+  return {
+    from: sender,
+    to: [recipient],
+    subject: `Mesačný finančný prehľad – ${report.monthLabel}`,
+    html: reportEmailHtml(report, commentary),
+    attachments: [{ filename: 'mesacny-graf.png', content: chartImage.toString('base64'), content_type: 'image/png', content_id: 'ofa-monthly-chart' }],
+  };
 }
 
 function isEmailDeliveryConfigured(): boolean {
@@ -266,12 +234,12 @@ function isEmailDeliveryConfigured(): boolean {
   return true;
 }
 
-async function sendReportEmail(report: MonthlyReport, commentary: string, chartUrl: string, recipient: string): Promise<boolean> {
+async function sendReportEmail(report: MonthlyReport, commentary: string, chartImage: Buffer, recipient: string): Promise<boolean> {
   if (!config.RESEND_API_KEY || !config.EMAIL_FROM) return false;
   const response = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: { authorization: `Bearer ${config.RESEND_API_KEY}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ from: config.EMAIL_FROM, to: [recipient], subject: `Mesačný finančný prehľad – ${report.monthLabel}`, html: reportEmailHtml(report, commentary, chartUrl) }),
+    body: JSON.stringify(reportEmailPayload(report, commentary, chartImage, recipient, config.EMAIL_FROM)),
   });
   if (!response.ok) throw new Error(`Resend delivery failed: ${response.status}`);
   return true;
@@ -461,7 +429,7 @@ export async function sendMonthlyReports(
       const numbers = reportNumbers(report, previousReport.expenseMinor);
       let commentary: string;
       try { commentary = await monthlyReportCommentary(numbers, `workspace:${workspace.id}`); } catch { commentary = 'Prehľad je pripravený. Odporúča sa sledovať najväčšie kategórie výdavkov v ďalšom mesiaci.'; }
-      const chartUrl = quickChartUrl(report);
+      const chartImage = await renderMonthlyChart(report);
       // A successful channel is persisted independently. On a later retry it
       // must remain successful even when there is nothing left to send.
       let hadDeliveryFailure = false;
@@ -473,7 +441,7 @@ export async function sendMonthlyReports(
           try {
             await assertActiveUserWorkspaceAccess(membership.user_id, workspace.id);
             await assertTelegramPrincipalAccess(account.external_account_id, { workspaceId: workspace.id });
-            await sendTelegramWithRetry(() => bot.api.sendPhoto(account.external_account_id, chartUrl, { caption: telegramCaption(report, commentary), parse_mode: 'HTML' }));
+            await sendTelegramWithRetry(() => bot.api.sendPhoto(account.external_account_id, new InputFile(chartImage, 'mesacny-graf.png'), { caption: telegramCaption(report, commentary), parse_mode: 'HTML' }));
             delivery = await markChannelDelivered(delivery, telegramChannel);
           } catch (error) {
             if (error instanceof AccessRevokedError) {
@@ -491,7 +459,7 @@ export async function sendMonthlyReports(
         if (email && emailDeliveryEnabled && !isReportChannelDelivered(delivery.dataSnapshot, emailChannel)) {
           try {
             await assertActiveUserWorkspaceAccess(membership.user_id, workspace.id);
-            if (await sendReportEmail(report, commentary, chartUrl, email)) {
+            if (await sendReportEmail(report, commentary, chartImage, email)) {
               delivery = await markChannelDelivered(delivery, emailChannel);
             } else {
               hadDeliveryFailure = true;
@@ -686,17 +654,17 @@ export async function currentMonthSummary(telegramUserId: string): Promise<strin
   try { return `${summary}\n${await monthlyCommentary(summary, `telegram:${telegramUserId}`)}`; } catch { return summary; }
 }
 
-export type CurrentMonthVisualReport = { chartUrl: string | null; caption: string };
+export type CurrentMonthVisualReport = { chartImage: Buffer | null; caption: string };
 
 export async function currentMonthVisualReport(telegramUserId: string): Promise<CurrentMonthVisualReport> {
   const lookup = await loadCurrentMonthReport(telegramUserId);
-  if (!lookup.report) return { chartUrl: null, caption: lookup.unavailableMessage };
+  if (!lookup.report) return { chartImage: null, caption: lookup.unavailableMessage };
 
   const summary = reportNumbers(lookup.report);
   let commentary = '';
   try { commentary = await monthlyCommentary(summary, `telegram:${telegramUserId}`); } catch { commentary = 'Prehľad je pripravený. Odporúča sa sledovať najväčšie kategórie výdavkov.'; }
   return {
-    chartUrl: lookup.report.categories.length > 0 ? quickChartUrl(lookup.report) : null,
+    chartImage: lookup.report.categories.length > 0 ? await renderMonthlyChart(lookup.report) : null,
     caption: telegramCaption(lookup.report, commentary),
   };
 }

@@ -13,6 +13,7 @@
     "test": "tsx --test src/*.test.ts scripts/*.test.mjs"
   },
   "dependencies": {
+    "@jimp/plugin-print": "1.6.1",
     "@supabase/supabase-js": "^2.49.1",
     "dotenv": "16.6.1",
     "fastify": "^5.11.2",

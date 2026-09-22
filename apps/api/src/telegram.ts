@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { Bot, InlineKeyboard, type Context } from 'grammy';
+import { Bot, InlineKeyboard, InputFile, type Context } from 'grammy';
 import { describeReceiptOcrFailure, extractReceipt, resolveCategoryCorrectionWithAi, transcribeVoice, type ReceiptExtraction } from './ai.js';
 import {
   categoryButtonRows,
@@ -1372,8 +1372,8 @@ export function createTelegramBot(): Bot {
       if (isCurrentMonthReportRequest(text)) {
         const report = await currentMonthVisualReport(String(ctx.from.id));
         await assertTelegramPrincipalAccess(String(ctx.from.id));
-        if (report.chartUrl) {
-          await ctx.replyWithPhoto(report.chartUrl, { caption: report.caption, parse_mode: 'HTML' });
+        if (report.chartImage) {
+          await ctx.replyWithPhoto(new InputFile(report.chartImage, 'mesacny-graf.png'), { caption: report.caption, parse_mode: 'HTML' });
         } else {
           await ctx.reply(report.caption, { parse_mode: 'HTML' });
         }
