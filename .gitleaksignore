@@ -1,0 +1,2 @@
+# Confirmed false positive: the word "token" in a unit-test title, not a credential.
+2c94f9babeac118c1252faf07572954e8e151a74:apps/api/src/category-correction.test.ts:generic-api-key:53

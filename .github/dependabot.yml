@@ -1,0 +1,34 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Bratislava
+    open-pull-requests-limit: 2
+    versioning-strategy: increase-if-necessary
+    groups:
+      routine-npm-updates:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-major
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+      time: "06:30"
+      timezone: Europe/Bratislava
+    open-pull-requests-limit: 1
+    groups:
+      github-actions:
+        patterns:
+          - "*"
