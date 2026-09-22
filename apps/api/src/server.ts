@@ -2,7 +2,7 @@ import Fastify from 'fastify';
 import { config } from './config.js';
 import { currentMonthSummary, previousClosedMonthReference, sendMonthlyReports, sendWeeklyReports } from './reports.js';
 import { createTelegramBot } from './telegram.js';
-import { hasValidTelegramWebhookSecret } from './telegram-webhook-security.js';
+import { telegramWebhookAuthHook } from './telegram-webhook-security.js';
 import { previousClosedWeekReference, startWeeklyReportScheduler } from './weekly-report-scheduler.js';
 import { startTelegramMediaJobWorker } from './async-jobs.js';
 import { notifyQueuedTelegramMediaFailure, processQueuedTelegramMedia } from './telegram.js';
@@ -115,12 +115,7 @@ app.post('/internal/receipt-purchase-protection/run', async (request, reply) => 
   return runReceiptPurchaseProtectionMaintenance(telegramBot);
 });
 
-app.post<{ Body: unknown }>('/api/telegram/webhook', async (request, reply) => {
-  if (!hasValidTelegramWebhookSecret(config.TELEGRAM_WEBHOOK_SECRET, request.headers['x-telegram-bot-api-secret-token'])) {
-    app.log.warn({ hasSecret: Boolean(config.TELEGRAM_WEBHOOK_SECRET), hasHeader: Boolean(request.headers['x-telegram-bot-api-secret-token']) }, 'Rejected Telegram webhook with an invalid secret');
-    return reply.code(401).send({ error: 'unauthorized' });
-  }
-
+app.post<{ Body: unknown }>('/api/telegram/webhook', { onRequest: telegramWebhookAuthHook(config.TELEGRAM_WEBHOOK_SECRET) }, async (request, reply) => {
   // Acknowledge the update before any OCR, AI, or database work. Telegram must
   // never retry an update just because downstream processing failed or was slow.
   reply.code(200).send({ ok: true });
