@@ -47,6 +47,7 @@ import { isCancelLastTransactionRequest } from './transaction-controls.js';
 import { enqueueTelegramMediaJob, wakeTelegramMediaJobWorker, type TelegramMediaJobPayload } from './async-jobs.js';
 import {
   decideReceiptPurchaseProtection,
+  RECEIPT_IMAGE_RETENTION_HOURS,
   updateReceiptPurchaseProtectionDuration,
   type ReceiptPurchaseProtectionDecision,
 } from './receipt-purchase-protection.js';
@@ -795,7 +796,7 @@ async function handleReceipt(ctx: Context): Promise<void> {
     }
     temporaryKey = null;
     stage = 'uloženie metadát bločku';
-    const retentionUntil = new Date(Date.now() + config.RECEIPT_STORAGE_RETENTION_HOURS * 60 * 60 * 1_000).toISOString();
+    const retentionUntil = new Date(Date.now() + RECEIPT_IMAGE_RETENTION_HOURS * 60 * 60 * 1_000).toISOString();
     const { data: finalizedRows, error: finalizeError } = await supabase.rpc('finalize_telegram_receipt', {
       p_workspace_id: saved.result.workspace_id,
       p_transaction_id: saved.result.transaction_id,

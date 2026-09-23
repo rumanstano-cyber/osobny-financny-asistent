@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { getSupabaseClient } from '../supabase';
+import { PrivacyControls } from './PrivacyControls';
 
 type Workspace = { id: string; name: string; base_currency_code: string };
 type Transaction = {
@@ -208,6 +209,7 @@ export function Dashboard({ session }: { session: Session }) {
             {pairingCode ? <div className="pair-code"><strong>{pairingCode.code}</strong><span>Platí do {new Intl.DateTimeFormat('sk-SK', { hour: '2-digit', minute: '2-digit' }).format(new Date(pairingCode.expiresAt))}</span></div> : <button className="button primary" type="button" onClick={() => void createPairingCode()}>Vygenerovať párovací kód</button>}
           </>}
         </section>
+        <PrivacyControls session={session} workspaces={workspaces} />
       </>}
     </main>
   );

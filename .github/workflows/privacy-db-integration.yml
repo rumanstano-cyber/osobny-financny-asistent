@@ -1,0 +1,48 @@
+name: Privacy database integration
+
+on:
+  pull_request:
+    paths:
+      - 'supabase/migrations/**'
+      - 'apps/api/scripts/privacy-db-integration.sql'
+      - '.github/workflows/privacy-db-integration.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  privacy-db-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: public.ecr.aws/supabase/postgres:17.6.1.155
+        env:
+          POSTGRES_PASSWORD: isolated-privacy-test-only
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Apply application migrations to disposable Postgres
+        shell: bash
+        env:
+          POSTGRES_CONTAINER_ID: ${{ job.services.postgres.id }}
+        run: |
+          set -euo pipefail
+          for migration in supabase/migrations/*.sql; do
+            docker exec -i "$POSTGRES_CONTAINER_ID" \
+              psql -v ON_ERROR_STOP=1 -U postgres -d postgres -f - < "$migration" >/dev/null
+          done
+      - name: Verify isolated account export and deletion invariants
+        shell: bash
+        env:
+          POSTGRES_CONTAINER_ID: ${{ job.services.postgres.id }}
+        run: |
+          set -euo pipefail
+          docker exec -i "$POSTGRES_CONTAINER_ID" \
+            psql -v ON_ERROR_STOP=1 -U postgres -d postgres -f - \
+            < apps/api/scripts/privacy-db-integration.sql

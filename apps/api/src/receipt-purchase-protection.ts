@@ -1,12 +1,12 @@
 import type { Bot } from 'grammy';
 import cron from 'node-cron';
-import { config } from './config.js';
 import { receiptPurchaseProtectionReminderText } from './receipt-purchase-protection-controls.js';
 import { deliverReceiptReminder } from './receipt-purchase-protection-delivery.js';
 import { supabase } from './supabase.js';
 import { AccessRevokedError, assertTelegramPrincipalAccess } from './access-control.js';
 import { redactSensitiveLogText, safeErrorLog } from './safe-log.js';
 import { reconcileReceiptStorageOrphans } from './receipt-storage-orphan-cleanup.js';
+import { processDueAccountErasures } from './privacy-erasure.js';
 
 export type ReceiptPurchaseProtectionDecision = {
   archive_status: 'decision_pending' | 'archived' | 'pending_deletion' | 'cleanup_claimed' | 'storage_deleted';
@@ -22,6 +22,8 @@ export type ReceiptPurchaseProtectionDurationUpdate = {
   was_changed: boolean;
 };
 
+export const RECEIPT_IMAGE_RETENTION_HOURS = 7 * 24;
+
 type StorageDeletionClaim = { receipt_id: string; storage_key: string };
 type ReminderClaim = { reminder_id: string; telegram_user_id: string; milestone_days: 60 | 30 | 7 };
 type ReminderDeliveryDetails = { merchant_name: string | null; receipt_date: string | null; storage_key: string | null };
@@ -36,7 +38,7 @@ export async function decideReceiptPurchaseProtection(
     p_telegram_user_id: telegramUserId,
     p_receipt_id: receiptId,
     p_keep_receipt: keepReceipt,
-    p_retention_hours: config.RECEIPT_STORAGE_RETENTION_HOURS,
+    p_retention_hours: RECEIPT_IMAGE_RETENTION_HOURS,
   });
   if (error) throw new Error(error.message);
   return (data as ReceiptPurchaseProtectionDecision[] | null)?.[0] ?? null;
@@ -56,11 +58,19 @@ export async function updateReceiptPurchaseProtectionDuration(
 }
 
 async function cleanUpExpiredReceiptStorage(): Promise<number> {
-  const { data, error } = await supabase.rpc('claim_receipt_storage_deletions', { p_limit: 50 });
-  if (error) throw new Error(error.message);
+  const [ordinary, warranty] = await Promise.all([
+    supabase.rpc('claim_receipt_storage_deletions', { p_limit: 25 }),
+    supabase.rpc('claim_expired_warranty_receipt_deletions', { p_limit: 25 }),
+  ]);
+  if (ordinary.error) throw new Error(ordinary.error.message);
+  if (warranty.error) throw new Error(warranty.error.message);
 
   let completed = 0;
-  for (const claim of (data as StorageDeletionClaim[] | null) ?? []) {
+  const claims = [
+    ...((ordinary.data as StorageDeletionClaim[] | null) ?? []),
+    ...((warranty.data as StorageDeletionClaim[] | null) ?? []),
+  ];
+  for (const claim of claims) {
     const { error: storageError } = await supabase.storage.from('ofa-receipts').remove([claim.storage_key]);
     const { error: completionError } = await supabase.rpc('complete_receipt_storage_deletion', {
       p_receipt_id: claim.receipt_id,
@@ -75,6 +85,14 @@ async function cleanUpExpiredReceiptStorage(): Promise<number> {
     completed += 1;
   }
   return completed;
+}
+
+async function cleanUpExpiredPrivacyMetadata(): Promise<{ purgedReceipts: number }> {
+  const { data: purgedReceipts, error: receiptError } = await supabase.rpc('purge_expired_receipt_extraction', { p_limit: 25 });
+  if (receiptError) throw new Error(receiptError.message);
+  const { error: metadataError } = await supabase.rpc('cleanup_privacy_metadata', { p_limit: 100 });
+  if (metadataError) throw new Error(metadataError.message);
+  return { purgedReceipts: Number(purgedReceipts ?? 0) };
 }
 
 async function cancelReminderAfterAccessRevocation(reminderId: string): Promise<void> {
@@ -188,13 +206,15 @@ async function sendDueReceiptPurchaseProtectionReminders(bot: Bot): Promise<numb
   return delivered;
 }
 
-export async function runReceiptPurchaseProtectionMaintenance(bot: Bot): Promise<{ deletedReceipts: number; deletedOrphans: number; sentReminders: number }> {
+export async function runReceiptPurchaseProtectionMaintenance(bot: Bot): Promise<{ deletedReceipts: number; deletedOrphans: number; purgedReceiptMetadata: number; sentReminders: number; erasedAccounts: number }> {
   const [deletedReceipts, orphanCleanup, sentReminders] = await Promise.all([
     cleanUpExpiredReceiptStorage(),
     reconcileReceiptStorageOrphans(),
     sendDueReceiptPurchaseProtectionReminders(bot),
   ]);
-  return { deletedReceipts, deletedOrphans: orphanCleanup.deleted, sentReminders };
+  const privacyCleanup = await cleanUpExpiredPrivacyMetadata();
+  const erasures = await processDueAccountErasures();
+  return { deletedReceipts, deletedOrphans: orphanCleanup.deleted, purgedReceiptMetadata: privacyCleanup.purgedReceipts, sentReminders, erasedAccounts: erasures.completed };
 }
 
 let schedulerStarted = false;
