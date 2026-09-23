@@ -16,6 +16,12 @@ const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL?.trim() ||
 
 export function PrivacyControls({ session, workspaces }: { session: Session; workspaces: Workspace[] }) {
   const supabase = getSupabaseClient();
+  // These RPCs are introduced by the privacy migration and are not part of
+  // the generated API types available to the web package at build time.
+  const privacyRpc = supabase.rpc as unknown as (
+    name: string,
+    args?: Record<string, unknown>,
+  ) => Promise<{ data: unknown; error: { message: string } | null }>;
   const [preview, setPreview] = useState<Preview | null>(null);
   const [successors, setSuccessors] = useState<Record<string, Successor[]>>({});
   const [selected, setSelected] = useState<Record<string, string>>({});
@@ -27,12 +33,12 @@ export function PrivacyControls({ session, workspaces }: { session: Session; wor
     setBusy(true);
     setMessage('');
     try {
-      const { data, error } = await supabase.rpc('account_erasure_preview');
+      const { data, error } = await privacyRpc('account_erasure_preview');
       if (error) throw error;
       const next = data as Preview;
       setPreview(next);
       const choices = await Promise.all(next.ownership_transfer_required_workspace_ids.map(async (workspaceId) => {
-        const result = await supabase.rpc('list_eligible_ownership_successors', { p_workspace_id: workspaceId });
+        const result = await privacyRpc('list_eligible_ownership_successors', { p_workspace_id: workspaceId });
         if (result.error) throw result.error;
         return [workspaceId, (result.data ?? []) as Successor[]] as const;
       }));
@@ -50,7 +56,7 @@ export function PrivacyControls({ session, workspaces }: { session: Session; wor
     setBusy(true);
     setMessage('');
     try {
-      const { error } = await supabase.rpc('transfer_workspace_ownership_for_erasure', {
+      const { error } = await privacyRpc('transfer_workspace_ownership_for_erasure', {
         p_workspace_id: workspaceId,
         p_successor_user_id: successorId,
       });
@@ -92,7 +98,7 @@ export function PrivacyControls({ session, workspaces }: { session: Session; wor
     setBusy(true);
     setMessage('');
     try {
-      const { error } = await supabase.rpc('confirm_account_erasure', { p_confirmation: 'VYMAZAŤ ÚČET' });
+      const { error } = await privacyRpc('confirm_account_erasure', { p_confirmation: 'VYMAZAŤ ÚČET' });
       if (error) throw error;
       setMessage('Žiadosť bola potvrdená. Účet je teraz zablokovaný; výmaz sa dokončí po 30 dňoch. Počas tejto lehoty je možné žiadosť zrušiť.');
       setConfirming(false);

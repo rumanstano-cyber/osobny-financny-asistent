@@ -5,6 +5,7 @@ on:
     paths:
       - 'supabase/migrations/**'
       - 'apps/api/scripts/privacy-db-integration.sql'
+      - 'apps/api/scripts/privacy-db-bootstrap.sql'
       - '.github/workflows/privacy-db-integration.yml'
   workflow_dispatch:
 
@@ -33,7 +34,11 @@ jobs:
           POSTGRES_CONTAINER_ID: ${{ job.services.postgres.id }}
         run: |
           set -euo pipefail
+          docker exec -i "$POSTGRES_CONTAINER_ID" \
+            psql -v ON_ERROR_STOP=1 -U postgres -d postgres -f - \
+            < apps/api/scripts/privacy-db-bootstrap.sql >/dev/null
           for migration in supabase/migrations/*.sql; do
+            echo "Applying $(basename "$migration")"
             docker exec -i "$POSTGRES_CONTAINER_ID" \
               psql -v ON_ERROR_STOP=1 -U postgres -d postgres -f - < "$migration" >/dev/null
           done
