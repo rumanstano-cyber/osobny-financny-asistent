@@ -35,3 +35,8 @@ create table if not exists public.receipts (id uuid primary key);
 create table if not exists public.monthly_reports (id uuid primary key);
 create or replace view public.v_monthly_summary as
   select transaction.id from public.transactions transaction;
+
+-- Historical scheduler migrations require Vault entries before their CREATE
+-- SCHEDULE statements. These are nonfunctional test values in an offline DB.
+select vault.create_secret('https://isolated.invalid', 'weekly_report_api_base_url');
+select vault.create_secret('ci-not-a-production-secret', 'weekly_report_internal_cron_secret');
