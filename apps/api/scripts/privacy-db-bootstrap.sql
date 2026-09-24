@@ -25,3 +25,13 @@ create table if not exists storage.objects (
   created_at timestamptz not null default now(),
   unique (bucket_id, name)
 );
+
+-- These four legacy test relations predate the append-only application
+-- migration history. The production migration set deliberately preserves and
+-- restricts them; synthetic CI needs empty stand-ins to replay that history.
+create table if not exists public.users (id uuid primary key);
+create table if not exists public.transactions (id uuid primary key);
+create table if not exists public.receipts (id uuid primary key);
+create table if not exists public.monthly_reports (id uuid primary key);
+create or replace view public.v_monthly_summary as
+  select transaction.id from public.transactions transaction;
