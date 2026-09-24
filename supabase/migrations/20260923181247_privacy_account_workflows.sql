@@ -591,7 +591,8 @@ alter table public.gdpr_requests
   add column if not exists erasure_attempt_count smallint not null default 0
     check (erasure_attempt_count between 0 and 10),
   add column if not exists erasure_retry_after timestamptz,
-  add column if not exists erasure_last_error_code varchar(64);
+  add column if not exists erasure_last_error_code varchar(64),
+  add column if not exists erasure_backup_confirmed_at timestamptz;
 
 create index if not exists gdpr_requests_erasure_due_idx
   on public.gdpr_requests (due_at, erasure_retry_after)
@@ -618,6 +619,9 @@ begin
       and coalesce(request.erasure_retry_after, request.due_at) <= pg_catalog.now()
       and (request.status = 'requested' or request.erasure_lease_expires_at < pg_catalog.now())
       and request.erasure_attempt_count < 10
+      -- No irreversible cleanup before an independent S3 backup has captured
+      -- this request. A failed backup leaves the request pending, not erased.
+      and request.erasure_backup_confirmed_at is not null
       and app_user.status = 'deleted'
       and app_user.deleted_at is null
     order by request.due_at, request.id
@@ -1086,3 +1090,76 @@ $$;
 
 revoke all on function public.finalize_account_erasure(uuid, uuid) from public, anon, authenticated;
 grant execute on function public.finalize_account_erasure(uuid, uuid) to service_role;
+
+-- The existing daily AWS backup writes this minimal request ledger alongside
+-- its database dump. It is independent of any one restored database snapshot.
+create or replace function public.list_erasure_reconciliation_snapshot(
+  p_after uuid default null,
+  p_limit integer default 500
+)
+returns table (
+  request_id uuid, user_id uuid, request_status text,
+  requested_at timestamptz, due_at timestamptz, completed_at timestamptz
+)
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if p_limit is null or p_limit < 1 or p_limit > 500 then
+    raise exception 'Invalid reconciliation page size' using errcode = '22023';
+  end if;
+  return query
+  select request.id, request.user_id, request.status::text,
+    request.requested_at, request.due_at, request.completed_at
+  from public.gdpr_requests request
+  where request.request_type = 'erasure'
+    and (p_after is null or request.id > p_after)
+    and (
+      request.status in ('requested', 'processing')
+      or request.requested_at >= pg_catalog.now() - interval '32 days'
+      or request.completed_at >= pg_catalog.now() - interval '32 days'
+    )
+  order by request.id
+  limit p_limit;
+end;
+$$;
+
+revoke all on function public.list_erasure_reconciliation_snapshot(uuid, integer)
+  from public, anon, authenticated;
+grant execute on function public.list_erasure_reconciliation_snapshot(uuid, integer)
+  to service_role;
+
+-- Called only after the backup manifest was uploaded and read back from S3.
+-- A request confirmed after the snapshot cannot be acknowledged by that run.
+create or replace function public.ack_erasure_reconciliation_snapshot(
+  p_snapshot_at timestamptz,
+  p_request_ids uuid[]
+)
+returns integer
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare v_count integer;
+begin
+  if p_snapshot_at is null or p_snapshot_at > pg_catalog.now()
+     or p_snapshot_at < pg_catalog.now() - interval '2 hours'
+     or p_request_ids is null or pg_catalog.array_length(p_request_ids, 1) > 500 then
+    raise exception 'Invalid reconciliation acknowledgement' using errcode = '22023';
+  end if;
+  update public.gdpr_requests request
+  set erasure_backup_confirmed_at = pg_catalog.now()
+  where request.id = any(p_request_ids)
+    and request.request_type = 'erasure'
+    and request.status in ('requested', 'processing')
+    and request.requested_at <= p_snapshot_at;
+  get diagnostics v_count = row_count;
+  return v_count;
+end;
+$$;
+
+revoke all on function public.ack_erasure_reconciliation_snapshot(timestamptz, uuid[])
+  from public, anon, authenticated;
+grant execute on function public.ack_erasure_reconciliation_snapshot(timestamptz, uuid[])
+  to service_role;

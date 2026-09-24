@@ -56,6 +56,7 @@ declare
   blocked boolean := false;
   request_row record;
   claim record;
+  backed_up integer;
 begin
   begin
     perform public.confirm_account_erasure_internal('00000000-0000-4000-8000-00000000a001', 'VYMAZAŤ ÚČET');
@@ -133,6 +134,33 @@ begin
     '00000000-0000-4000-8000-00000000a003'
   ) and request_type = 'erasure';
 
+  if exists (select 1 from public.claim_due_account_erasures(2)) then
+    raise exception 'Irreversible erasure was claimed before independent backup acknowledgement';
+  end if;
+  if not exists (
+    select 1 from public.list_erasure_reconciliation_snapshot(null, 500)
+    where user_id = '00000000-0000-4000-8000-00000000a001'
+  ) then raise exception 'Shared erasure was absent from backup ledger'; end if;
+  backed_up := public.ack_erasure_reconciliation_snapshot(
+    now(),
+    array[
+      '00000000-0000-4000-8000-00000000a001',
+      '00000000-0000-4000-8000-00000000a003'
+    ]::uuid[]
+  );
+  if backed_up <> 0 then
+    raise exception 'A user ID was accepted in place of a backed-up request ID';
+  end if;
+  backed_up := public.ack_erasure_reconciliation_snapshot(
+    now(),
+    array(select request.id from public.gdpr_requests request
+      where request.user_id in (
+        '00000000-0000-4000-8000-00000000a001',
+        '00000000-0000-4000-8000-00000000a003'
+      ) and request.request_type = 'erasure')
+  );
+  if backed_up <> 2 then raise exception 'Independent backup acknowledgement was incomplete'; end if;
+
   for claim in select * from public.claim_due_account_erasures(2) loop
     if claim.user_id = '00000000-0000-4000-8000-00000000a001' then
       if exists (
@@ -175,5 +203,26 @@ begin
     where id = '00000000-0000-4000-8000-00000000a002'
       and email = 'privacy-b@example.invalid' and status = 'active'
   ) then raise exception 'Remaining member was altered'; end if;
+end;
+$$;
+
+do $$
+begin
+  if pg_catalog.has_function_privilege('anon',
+       'public.list_erasure_reconciliation_snapshot(uuid, integer)', 'EXECUTE')
+     or pg_catalog.has_function_privilege('authenticated',
+       'public.list_erasure_reconciliation_snapshot(uuid, integer)', 'EXECUTE')
+     or pg_catalog.has_function_privilege('anon',
+       'public.ack_erasure_reconciliation_snapshot(timestamptz, uuid[])', 'EXECUTE')
+     or pg_catalog.has_function_privilege('authenticated',
+       'public.ack_erasure_reconciliation_snapshot(timestamptz, uuid[])', 'EXECUTE') then
+    raise exception 'Privacy backup RPC is exposed to client roles';
+  end if;
+  if not pg_catalog.has_function_privilege('service_role',
+       'public.list_erasure_reconciliation_snapshot(uuid, integer)', 'EXECUTE')
+     or not pg_catalog.has_function_privilege('service_role',
+       'public.ack_erasure_reconciliation_snapshot(timestamptz, uuid[])', 'EXECUTE') then
+    raise exception 'Privacy backup RPC is unavailable to service role';
+  end if;
 end;
 $$;

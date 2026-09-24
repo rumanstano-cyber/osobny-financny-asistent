@@ -98,7 +98,12 @@ jobs:
           run_id="$(date -u +'%Y/%m/%d/%Y%m%dT%H%M%SZ')-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           work_dir="$(mktemp -d)"
           trap 'rm -rf "$work_dir"' EXIT
-          mkdir -p "$work_dir/database" "$work_dir/storage" "$work_dir/config"
+          mkdir -p "$work_dir/database" "$work_dir/storage" "$work_dir/config" "$work_dir/privacy"
+
+          # Capture the minimal erasure ledger before the database dump. A
+          # request added later is not acknowledged by this backup run.
+          node apps/api/scripts/backup-erasure-reconciliation.mjs \
+            snapshot "$work_dir/privacy/erasure-ledger.json"
 
           npx --yes "supabase@${SUPABASE_CLI_VERSION}" db dump \
             --db-url "$SUPABASE_DB_URL" \
@@ -122,7 +127,7 @@ jobs:
             render.yaml .env.example supabase/migrations .github/workflows
           (
             cd "$work_dir"
-            find database storage config -type f -print0 \
+            find database storage config privacy -type f -print0 \
               | sort -z \
               | xargs -0 sha256sum > SHA256SUMS
           )
@@ -137,11 +142,23 @@ jobs:
             --recursive \
             --sse AES256 \
             --only-show-errors
+          # An irreversible account erasure is eligible only after both the
+          # database backup and independent S3 ledger have been read back.
+          aws s3api head-object \
+            --bucket "$BACKUP_BUCKET" \
+            --key "production/${run_id}/backup.json" >/dev/null
+          aws s3 cp \
+            "s3://${BACKUP_BUCKET}/production/${run_id}/privacy/erasure-ledger.json" \
+            "$work_dir/privacy/erasure-ledger-readback.json" --only-show-errors
+          cmp "$work_dir/privacy/erasure-ledger.json" \
+            "$work_dir/privacy/erasure-ledger-readback.json"
           printf '{"prefix":"production/%s/"}\n' "$run_id" > "$work_dir/latest.json"
           aws s3 cp "$work_dir/latest.json" "s3://${BACKUP_BUCKET}/latest.json" \
             --sse AES256 \
             --content-type application/json \
             --only-show-errors
+          node apps/api/scripts/backup-erasure-reconciliation.mjs \
+            ack "$work_dir/privacy/erasure-ledger.json"
 
       - name: Verify that the backup marker is readable
         shell: bash
