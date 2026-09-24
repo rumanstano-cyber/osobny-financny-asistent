@@ -5,7 +5,6 @@ on:
     paths:
       - 'supabase/migrations/**'
       - 'apps/api/scripts/privacy-db-integration.sql'
-      - 'apps/api/scripts/privacy-db-bootstrap.sql'
       - '.github/workflows/privacy-db-integration.yml'
   workflow_dispatch:
 
@@ -34,9 +33,17 @@ jobs:
           POSTGRES_CONTAINER_ID: ${{ job.services.postgres.id }}
         run: |
           set -euo pipefail
-          docker exec -i "$POSTGRES_CONTAINER_ID" \
-            psql -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -f - \
-            < apps/api/scripts/privacy-db-bootstrap.sql >/dev/null
+          # pg_isready can succeed while Supabase's platform schemas are still
+          # being initialized. Never apply app migrations to a partial image.
+          ready=false
+          for attempt in $(seq 1 45); do
+            relations="$(docker exec "$POSTGRES_CONTAINER_ID" \
+              psql -U supabase_admin -d postgres -Atq \
+                -c "select to_regclass('auth.users') is not null and to_regclass('storage.buckets') is not null and to_regclass('storage.objects') is not null" 2>/dev/null || true)"
+            if [ "$relations" = t ]; then ready=true; break; fi
+            sleep 2
+          done
+          if [ "$ready" != true ]; then echo 'Supabase platform schemas did not become ready.' >&2; exit 1; fi
           for migration in supabase/migrations/*.sql; do
             echo "Applying $(basename "$migration")"
             docker exec -i "$POSTGRES_CONTAINER_ID" \
