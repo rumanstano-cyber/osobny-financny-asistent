@@ -3,6 +3,13 @@
 -- The standalone Supabase Postgres image does not initialize the separate
 -- Storage service tables. These minimal relations exist only in disposable CI.
 -- The image itself supplies auth.users, auth.uid(), Vault, pg_cron and pg_net.
+-- Its placeholder auth.users relation omits columns supplied by the Auth
+-- service in a full Supabase stack. Add only those needed by app migrations.
+alter table auth.users
+  add column if not exists email text,
+  add column if not exists email_confirmed_at timestamptz,
+  add column if not exists raw_user_meta_data jsonb not null default '{}'::jsonb;
+
 create table if not exists storage.buckets (
   id text primary key,
   name text not null,
