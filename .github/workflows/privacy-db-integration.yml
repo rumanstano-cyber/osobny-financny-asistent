@@ -35,7 +35,7 @@ jobs:
         run: |
           set -euo pipefail
           docker exec -i "$POSTGRES_CONTAINER_ID" \
-            psql -v ON_ERROR_STOP=1 -U postgres -d postgres -f - \
+            psql -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -f - \
             < apps/api/scripts/privacy-db-bootstrap.sql >/dev/null
           for migration in supabase/migrations/*.sql; do
             echo "Applying $(basename "$migration")"

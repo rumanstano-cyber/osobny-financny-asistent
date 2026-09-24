@@ -31,3 +31,11 @@ create table storage.objects (
   created_at timestamptz not null default now(),
   unique (bucket_id, name)
 );
+
+-- The Supabase image owns managed schemas as supabase_admin. Transfer only
+-- these disposable fixture tables to postgres so ordinary app migrations can
+-- create auth triggers and storage references exactly as in production.
+alter table auth.users owner to postgres;
+alter table storage.buckets owner to postgres;
+alter table storage.objects owner to postgres;
+grant usage on schema auth, storage to postgres;

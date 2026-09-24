@@ -71,6 +71,7 @@ import {
 import { AccessRevokedError, assertTelegramPrincipalAccess } from './access-control.js';
 import { ReceiptPersistenceError } from './receipt-errors.js';
 import { safeErrorLog } from './safe-log.js';
+import { deliverFirstUsePrivacyNotice } from './privacy-notice.js';
 
 type RpcResult = { transaction_id: string; workspace_id: string; was_duplicate: boolean };
 type BatchRpcResult = RpcResult & { item_index: number };
@@ -960,6 +961,9 @@ export function createTelegramBot(): Bot {
         allowUnlinkedForRelink: isLinkCommand,
       });
       await enforceCostProtection('telegram_update', `telegram:${telegramUserId}`);
+      if (ctx.chat?.type === 'private' && !isLinkCommand) {
+        await deliverFirstUsePrivacyNotice(telegramUserId, (message) => ctx.reply(message));
+      }
       return next();
     } catch (error) {
       if (error instanceof AccessRevokedError) {
@@ -970,7 +974,7 @@ export function createTelegramBot(): Bot {
         await notifyRateLimit(ctx, 'Požiadaviek je teraz priveľa. Skúste to, prosím, neskôr.');
         return;
       }
-      console.error('Telegram anti-spam check failed closed', {
+      console.error('Telegram pre-processing failed closed', {
         updateId: ctx.update.update_id,
         error: safeErrorLog(error),
       });

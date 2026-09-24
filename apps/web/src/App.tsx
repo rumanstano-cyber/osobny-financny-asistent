@@ -4,6 +4,7 @@ import { AuthPage } from './components/AuthPage';
 import { Dashboard } from './components/Dashboard';
 import { LandingPage } from './components/LandingPage';
 import { PendingDeletionPage } from './components/PendingDeletionPage';
+import { PrivacyInformationPage } from './components/PrivacyInformationPage';
 import { getSupabaseClient, isSupabaseConfigured } from './supabase';
 
 export function App() {
@@ -72,6 +73,8 @@ export function App() {
   if (loading) {
     return <main className="page-center" aria-live="polite"><p>Načítavam bezpečnú reláciu…</p></main>;
   }
+
+  if (path === '/privacy') return <PrivacyInformationPage />;
 
   if (session && deletionState === undefined) return <main className="page-center" aria-live="polite"><p>Overujem stav účtu…</p></main>;
   if (session && deletionState) return <PendingDeletionPage graceEndsAt={deletionState.graceEndsAt} canCancel={deletionState.canCancel} onCancelled={() => setDeletionState(null)} />;

@@ -86,7 +86,7 @@ export function LandingPage() {
       <section className="say-section section-wrap" aria-labelledby="say-heading"><div className="section-intro centered-intro"><p className="landing-eyebrow">ČO MÔŽEŠ NAPÍSAŤ</p><h2 id="say-heading">Takto jednoducho.</h2><p className="example-note">Toto sú len príklady. Napíš to vlastnými slovami.</p></div><div className="phrase-list"><span>„Káva 3,50 €“</span><span>„Nákup 42 €“</span><span>„Prišla mi výplata 1 500 €“</span><span>„Oprav kategóriu“</span><span>„Kávu daj do reštaurácie“</span><span>„Zruš posledný zápis“</span><span>„Vymaž poslednú transakciu“</span><span>„Nájdi mi bloček z Lidla“</span><span>„Aké boli výdavky tento mesiac?“</span></div></section>
 
       <section className="final-cta" aria-labelledby="cta-heading"><p className="landing-eyebrow">ZAČNI DNES</p><h2 id="cta-heading">Tvoje financie. Jedna jednoduchá konverzácia.</h2><p>Otvor Telegram, napíš prvý výdavok a uvidíš, či ti tento spôsob sedí.</p><a className="telegram-button light" href={telegramBotUrl} target="_blank" rel="noreferrer">Vyskúšať v Telegrame <span aria-hidden="true">↗</span></a></section>
-      <footer className="landing-footer"><a className="brand" href="/">ofa<span>•</span></a><span>Osobný finančný asistent · beta</span><a href="/login">Webový prehľad</a></footer>
+      <footer className="landing-footer"><a className="brand" href="/">ofa<span>•</span></a><span>Osobný finančný asistent · beta</span><a href="/privacy">Ochrana údajov</a><a href="/login">Webový prehľad</a></footer>
     </main>
   );
 }
