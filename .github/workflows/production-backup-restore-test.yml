@@ -31,6 +31,9 @@ jobs:
           --health-retries 12
 
     steps:
+      - name: Check out the repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
       - name: Validate the GitHub OIDC identity
         shell: bash
         run: |
