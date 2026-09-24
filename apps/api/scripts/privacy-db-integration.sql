@@ -5,7 +5,8 @@ insert into public.ofa_users (id, display_name, email) values
   ('00000000-0000-4000-8000-00000000a001', 'Synthetic departing owner', 'privacy-a@example.invalid'),
   ('00000000-0000-4000-8000-00000000a002', 'Synthetic remaining member', 'privacy-b@example.invalid'),
   ('00000000-0000-4000-8000-00000000a003', 'Synthetic sole owner', 'privacy-c@example.invalid'),
-  ('00000000-0000-4000-8000-00000000a004', 'Synthetic cancellation', 'privacy-d@example.invalid');
+  ('00000000-0000-4000-8000-00000000a004', 'Synthetic cancellation', 'privacy-d@example.invalid'),
+  ('00000000-0000-4000-8000-00000000a005', 'Synthetic inactive member', 'privacy-e@example.invalid');
 
 insert into public.workspaces (id, name, workspace_type, base_currency_code, created_by_user_id) values
   ('00000000-0000-4000-8000-00000000b001', 'Synthetic shared', 'family', 'EUR', '00000000-0000-4000-8000-00000000a001'),
@@ -15,6 +16,7 @@ insert into public.workspaces (id, name, workspace_type, base_currency_code, cre
 insert into public.workspace_members (workspace_id, user_id, role, status, joined_at) values
   ('00000000-0000-4000-8000-00000000b001', '00000000-0000-4000-8000-00000000a001', 'owner', 'active', now()),
   ('00000000-0000-4000-8000-00000000b001', '00000000-0000-4000-8000-00000000a002', 'member', 'active', now()),
+  ('00000000-0000-4000-8000-00000000b001', '00000000-0000-4000-8000-00000000a005', 'member', 'suspended', now()),
   ('00000000-0000-4000-8000-00000000b002', '00000000-0000-4000-8000-00000000a003', 'owner', 'active', now()),
   ('00000000-0000-4000-8000-00000000b003', '00000000-0000-4000-8000-00000000a004', 'owner', 'active', now());
 
@@ -62,6 +64,28 @@ begin
   end;
   if not blocked then raise exception 'Shared owner erasure was not blocked before explicit transfer'; end if;
 
+  blocked := false;
+  begin
+    perform public.transfer_workspace_ownership_for_erasure_internal(
+      '00000000-0000-4000-8000-00000000a001',
+      '00000000-0000-4000-8000-00000000b001',
+      '00000000-0000-4000-8000-00000000a004'
+    );
+  exception when insufficient_privilege then blocked := true;
+  end;
+  if not blocked then raise exception 'Non-member successor was accepted'; end if;
+
+  blocked := false;
+  begin
+    perform public.transfer_workspace_ownership_for_erasure_internal(
+      '00000000-0000-4000-8000-00000000a001',
+      '00000000-0000-4000-8000-00000000b001',
+      '00000000-0000-4000-8000-00000000a005'
+    );
+  exception when insufficient_privilege then blocked := true;
+  end;
+  if not blocked then raise exception 'Inactive successor was accepted'; end if;
+
   perform public.transfer_workspace_ownership_for_erasure_internal(
     '00000000-0000-4000-8000-00000000a001',
     '00000000-0000-4000-8000-00000000b001',
@@ -72,7 +96,21 @@ begin
     where workspace_id = '00000000-0000-4000-8000-00000000b001'
       and user_id = '00000000-0000-4000-8000-00000000a002' and role = 'owner'
   ) then raise exception 'Explicit transfer did not select the intended successor'; end if;
+  if not exists (
+    select 1 from public.workspaces
+    where id = '00000000-0000-4000-8000-00000000b002'
+      and created_by_user_id = '00000000-0000-4000-8000-00000000a003'
+  ) then raise exception 'Transfer changed another workspace'; end if;
 
+  perform public.confirm_account_erasure_internal('00000000-0000-4000-8000-00000000a001', 'VYMAZAŤ ÚČET');
+  if not public.cancel_account_erasure_internal('00000000-0000-4000-8000-00000000a001') then
+    raise exception 'Transferred owner could not cancel during grace';
+  end if;
+  if not exists (
+    select 1 from public.workspace_members
+    where workspace_id = '00000000-0000-4000-8000-00000000b001'
+      and user_id = '00000000-0000-4000-8000-00000000a002' and role = 'owner'
+  ) then raise exception 'Cancellation reverted explicit ownership transfer'; end if;
   perform public.confirm_account_erasure_internal('00000000-0000-4000-8000-00000000a001', 'VYMAZAŤ ÚČET');
   perform public.confirm_account_erasure_internal('00000000-0000-4000-8000-00000000a003', 'VYMAZAŤ ÚČET');
   perform public.confirm_account_erasure_internal('00000000-0000-4000-8000-00000000a004', 'VYMAZAŤ ÚČET');
@@ -82,6 +120,11 @@ begin
   if not exists (select 1 from public.workspaces where id = '00000000-0000-4000-8000-00000000b003') then
     raise exception 'Cancellation removed workspace data';
   end if;
+  if not exists (
+    select 1 from public.workspace_members
+    where workspace_id = '00000000-0000-4000-8000-00000000b001'
+      and user_id = '00000000-0000-4000-8000-00000000a002' and role = 'owner'
+  ) then raise exception 'Cancellation reverted a separate ownership transfer'; end if;
 
   -- Advance only synthetic requests in this disposable CI database.
   update public.gdpr_requests set due_at = now() - interval '1 minute'
