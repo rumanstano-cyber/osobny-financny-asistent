@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { getSupabaseClient } from '../supabase';
+import { PrivacyControls } from './PrivacyControls';
+import { PrivacyNoticeBanner } from './PrivacyNoticeBanner';
 
 type Workspace = { id: string; name: string; base_currency_code: string };
 type Transaction = {
@@ -172,6 +174,8 @@ export function Dashboard({ session }: { session: Session }) {
         <p className="muted">Prihlásený: {session.user.email}</p>
       </section>
 
+      <PrivacyNoticeBanner />
+
       {error && <p className="notice error" role="alert">{error}</p>}
       {loading ? <p className="notice" aria-live="polite">Načítavam údaje…</p> : <>
         <section className="stats-grid" aria-label="Súhrn aktuálneho mesiaca">
@@ -208,6 +212,7 @@ export function Dashboard({ session }: { session: Session }) {
             {pairingCode ? <div className="pair-code"><strong>{pairingCode.code}</strong><span>Platí do {new Intl.DateTimeFormat('sk-SK', { hour: '2-digit', minute: '2-digit' }).format(new Date(pairingCode.expiresAt))}</span></div> : <button className="button primary" type="button" onClick={() => void createPairingCode()}>Vygenerovať párovací kód</button>}
           </>}
         </section>
+        <PrivacyControls session={session} workspaces={workspaces} />
       </>}
     </main>
   );

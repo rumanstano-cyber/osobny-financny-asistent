@@ -31,6 +31,9 @@ jobs:
           --health-retries 12
 
     steps:
+      - name: Check out the repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
       - name: Validate the GitHub OIDC identity
         shell: bash
         run: |
@@ -226,5 +229,20 @@ jobs:
               and to_regclass('public.ofa_receipts') is not null
               then 'restore-ok' else 'restore-invalid' end" \
             | grep -qx 'restore-ok'
+
+          # Compare the restored database with the independently stored
+          # request ledger. Identifiers stay in private runner files, not logs.
+          docker exec "$POSTGRES_CONTAINER_ID" \
+            psql -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -Atq -c \
+            "select request.id::text || E'\\t' || request.user_id::text || E'\\t'
+              || request.status::text || E'\\t' || app_user.status::text || E'\\t'
+              || (app_user.deleted_at is not null)::text
+              from public.gdpr_requests request
+              join public.ofa_users app_user on app_user.id = request.user_id
+              where request.request_type = 'erasure'" \
+            > "$restore_dir/privacy/restored-erasure-state.tsv"
+          node apps/api/scripts/verify-erasure-reconciliation.mjs \
+            "$restore_dir/privacy/erasure-ledger.json" \
+            "$restore_dir/privacy/restored-erasure-state.tsv"
 
           echo "Database and receipt files restored successfully in the isolated runner."

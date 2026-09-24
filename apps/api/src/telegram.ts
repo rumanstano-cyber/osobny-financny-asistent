@@ -47,6 +47,7 @@ import { isCancelLastTransactionRequest } from './transaction-controls.js';
 import { enqueueTelegramMediaJob, wakeTelegramMediaJobWorker, type TelegramMediaJobPayload } from './async-jobs.js';
 import {
   decideReceiptPurchaseProtection,
+  RECEIPT_IMAGE_RETENTION_HOURS,
   updateReceiptPurchaseProtectionDuration,
   type ReceiptPurchaseProtectionDecision,
 } from './receipt-purchase-protection.js';
@@ -70,6 +71,7 @@ import {
 import { AccessRevokedError, assertTelegramPrincipalAccess } from './access-control.js';
 import { ReceiptPersistenceError } from './receipt-errors.js';
 import { safeErrorLog } from './safe-log.js';
+import { deliverFirstUsePrivacyNotice } from './privacy-notice.js';
 
 type RpcResult = { transaction_id: string; workspace_id: string; was_duplicate: boolean };
 type BatchRpcResult = RpcResult & { item_index: number };
@@ -795,7 +797,7 @@ async function handleReceipt(ctx: Context): Promise<void> {
     }
     temporaryKey = null;
     stage = 'uloženie metadát bločku';
-    const retentionUntil = new Date(Date.now() + config.RECEIPT_STORAGE_RETENTION_HOURS * 60 * 60 * 1_000).toISOString();
+    const retentionUntil = new Date(Date.now() + RECEIPT_IMAGE_RETENTION_HOURS * 60 * 60 * 1_000).toISOString();
     const { data: finalizedRows, error: finalizeError } = await supabase.rpc('finalize_telegram_receipt', {
       p_workspace_id: saved.result.workspace_id,
       p_transaction_id: saved.result.transaction_id,
@@ -959,6 +961,9 @@ export function createTelegramBot(): Bot {
         allowUnlinkedForRelink: isLinkCommand,
       });
       await enforceCostProtection('telegram_update', `telegram:${telegramUserId}`);
+      if (ctx.chat?.type === 'private' && !isLinkCommand) {
+        await deliverFirstUsePrivacyNotice(telegramUserId, (message) => ctx.reply(message));
+      }
       return next();
     } catch (error) {
       if (error instanceof AccessRevokedError) {
@@ -969,7 +974,7 @@ export function createTelegramBot(): Bot {
         await notifyRateLimit(ctx, 'Požiadaviek je teraz priveľa. Skúste to, prosím, neskôr.');
         return;
       }
-      console.error('Telegram anti-spam check failed closed', {
+      console.error('Telegram pre-processing failed closed', {
         updateId: ctx.update.update_id,
         error: safeErrorLog(error),
       });

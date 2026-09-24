@@ -1,0 +1,68 @@
+name: Privacy database integration
+
+on:
+  pull_request:
+    paths:
+      - 'supabase/migrations/**'
+      - 'apps/api/scripts/privacy-db-integration.sql'
+      - 'apps/api/scripts/privacy-db-bootstrap.sql'
+      - '.github/workflows/privacy-db-integration.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  privacy-db-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: public.ecr.aws/supabase/postgres:17.6.1.155
+        env:
+          POSTGRES_PASSWORD: isolated-privacy-test-only
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Apply application migrations to disposable Postgres
+        shell: bash
+        env:
+          POSTGRES_CONTAINER_ID: ${{ job.services.postgres.id }}
+        run: |
+          set -euo pipefail
+          # pg_isready can succeed before the Auth schema is initialized.
+          ready=false
+          for attempt in $(seq 1 45); do
+            relations="$(docker exec "$POSTGRES_CONTAINER_ID" \
+              psql -U supabase_admin -d postgres -Atq \
+                -c "select to_regclass('auth.users') is not null and to_regprocedure('auth.uid()') is not null" 2>/dev/null || true)"
+            if [ "$relations" = t ]; then ready=true; break; fi
+            sleep 2
+          done
+          if [ "$ready" != true ]; then echo 'Supabase platform schemas did not become ready.' >&2; exit 1; fi
+          # The migration set defines cron jobs. Keep this synthetic database
+          # offline so no scheduled SQL can reach a real external endpoint.
+          for network in $(docker inspect -f '{{range $key, $value := .NetworkSettings.Networks}}{{$key}} {{end}}' "$POSTGRES_CONTAINER_ID"); do
+            docker network disconnect "$network" "$POSTGRES_CONTAINER_ID"
+          done
+          docker exec -i "$POSTGRES_CONTAINER_ID" \
+            psql -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -f - \
+            < apps/api/scripts/privacy-db-bootstrap.sql >/dev/null
+          for migration in supabase/migrations/*.sql; do
+            echo "Applying $(basename "$migration")"
+            docker exec -i "$POSTGRES_CONTAINER_ID" \
+              psql -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -f - < "$migration" >/dev/null
+          done
+      - name: Verify isolated account export and deletion invariants
+        shell: bash
+        env:
+          POSTGRES_CONTAINER_ID: ${{ job.services.postgres.id }}
+        run: |
+          set -euo pipefail
+          docker exec -i "$POSTGRES_CONTAINER_ID" \
+            psql -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -f - \
+            < apps/api/scripts/privacy-db-integration.sql

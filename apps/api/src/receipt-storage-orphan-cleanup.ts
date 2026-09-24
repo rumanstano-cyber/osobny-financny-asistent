@@ -1,7 +1,7 @@
 import { safeErrorLog } from './safe-log.js';
 import { supabase } from './supabase.js';
 
-const minimumOrphanAge = '24 hours';
+const minimumOrphanAge = '7 days';
 const cleanupLease = '10 minutes';
 const cleanupLimit = 25;
 

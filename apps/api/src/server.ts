@@ -10,6 +10,8 @@ import { runReceiptPurchaseProtectionMaintenance, startReceiptPurchaseProtection
 import { safeErrorLog, safeRequestPath } from './safe-log.js';
 import { buildOperationalWatchdogSnapshot, hasValidMonitoringSecret } from './monitoring.js';
 import { registerHttpSecurity } from './http-security.js';
+import { PrivacyAccessError, collectPrivateExport, resolveVerifiedWebUser, streamPrivateExport } from './privacy-export.js';
+import { supabase } from './supabase.js';
 
 const app = Fastify({
   logger: {
@@ -75,6 +77,53 @@ registerHttpSecurity(app, {
 });
 
 app.get('/health', async () => ({ status: 'ok' }));
+
+app.get('/api/privacy/export', async (request, reply) => {
+  let userId: string;
+  try {
+    userId = (await resolveVerifiedWebUser(request.headers.authorization)).id;
+  } catch (error) {
+    if (error instanceof PrivacyAccessError) return reply.code(401).send({ error: 'unauthorized' });
+    throw error;
+  }
+
+  const { count, error: countError } = await supabase.from('gdpr_requests')
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', userId)
+    .eq('request_type', 'export')
+    .gte('requested_at', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString());
+  if (countError) throw new Error(countError.message);
+  if ((count ?? 0) >= 5) return reply.code(429).send({ error: 'Export je možné vyžiadať najviac päťkrát denne.' });
+
+  const payload = await collectPrivateExport(userId);
+  const { data: exportRequest, error: requestError } = await supabase.from('gdpr_requests')
+    .insert({
+      user_id: userId,
+      request_type: 'export',
+      status: 'processing',
+      due_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+    })
+    .select('id').single();
+  if (requestError || !exportRequest) throw new Error(requestError?.message ?? 'Export request could not be recorded');
+
+  const stream = streamPrivateExport(payload, userId);
+  let settled = false;
+  const settle = (status: 'completed' | 'rejected') => {
+    if (settled) return;
+    settled = true;
+    void supabase.from('gdpr_requests').update({ status, completed_at: new Date().toISOString() })
+      .eq('id', exportRequest.id).then(({ error }) => {
+        if (error) app.log.error({ error: safeErrorLog(error) }, 'Privacy export request status update failed');
+      });
+  };
+  stream.once('end', () => settle('completed'));
+  stream.once('error', () => settle('rejected'));
+  stream.once('close', () => settle('rejected'));
+  reply.header('content-type', 'application/zip');
+  reply.header('content-disposition', 'attachment; filename="osobny-financny-asistent-export.zip"');
+  reply.header('cache-control', 'private, no-store');
+  return reply.send(stream);
+});
 
 app.get('/internal/monitoring/snapshot', async (request, reply) => {
   if (!config.MONITORING_WATCHDOG_SECRET) return reply.code(404).send({ error: 'not_found' });
