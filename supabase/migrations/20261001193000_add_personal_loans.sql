@@ -47,13 +47,14 @@ create table public.loan_movements (
   telegram_update_id text not null unique,
   created_by_user_id uuid not null references public.ofa_users(id) on delete restrict,
   occurred_at timestamptz not null default now(),
+  created_at timestamptz not null default clock_timestamp(),
   voided_at timestamptz,
   constraint loan_movements_counterparty_fk foreign key (counterparty_id, workspace_id)
     references public.loan_counterparties(id, workspace_id) on delete restrict,
   unique (id, workspace_id)
 );
 create index loan_movements_workspace_recent_idx on public.loan_movements
-  (workspace_id, created_by_user_id, occurred_at desc, id desc) where voided_at is null;
+  (workspace_id, created_by_user_id, created_at desc, id desc) where voided_at is null;
 
 create or replace function public.protect_loan_transfer()
 returns trigger language plpgsql set search_path = '' as $$
