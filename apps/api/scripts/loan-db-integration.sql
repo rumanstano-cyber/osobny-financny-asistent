@@ -26,7 +26,10 @@ begin
   select id into jano_id from public.loan_counterparties where name = 'Jano';
   select * into result from public.record_telegram_loan_movement(
     '111111111','111111111','1','1001','Jano',null,'lent','principal',50000,'EUR',null,'2026-10-01T10:00:00Z');
-  if not result.was_duplicate or (select count(*) from public.personal_loans) <> 1 then raise exception 'Loan replay duplicated the principal'; end if;
+  if not result.was_duplicate or (select count(*) from public.personal_loans
+      where workspace_id = '10000000-0000-4000-8000-00000000b001') <> 1 then
+    raise exception 'Loan replay duplicated the principal';
+  end if;
   select * into result from public.record_telegram_loan_movement(
     '111111111','111111111','2','1002',null,jano_id,'lent','principal',5000,'EUR',null,'2026-10-02T10:00:00Z');
   if result.remaining_minor <> 55000 then raise exception 'Second loan did not aggregate'; end if;
@@ -42,10 +45,14 @@ begin
       '111111111','111111111','4','1004',null,jano_id,'lent','repayment',40000,'EUR');
   exception when numeric_value_out_of_range then failed := true;
   end;
-  if not failed or (select count(*) from public.loan_movements) <> 3 then raise exception 'Overpayment created a movement'; end if;
+  if not failed or (select count(*) from public.loan_movements
+      where workspace_id = '10000000-0000-4000-8000-00000000b001') <> 3 then
+    raise exception 'Overpayment created a movement';
+  end if;
   select * into result from public.record_telegram_loan_movement(
     '111111111','111111111','5','1005',null,jano_id,'lent','repayment',35000,'EUR',null,'2026-10-04T10:00:00Z');
-  if result.remaining_minor <> 0 or exists (select 1 from public.personal_loans where status = 'OPEN') then
+  if result.remaining_minor <> 0 or exists (select 1 from public.personal_loans
+      where workspace_id = '10000000-0000-4000-8000-00000000b001' and status = 'OPEN') then
     raise exception 'Settlement left an open loan';
   end if;
   failed := false;
@@ -58,7 +65,8 @@ begin
   if public.void_last_telegram_loan_movement('222222222', result.movement_id) then
     raise exception 'Cross-user void accepted';
   end if;
-  if (select count(*) from public.financial_transactions where transaction_type <> 'transfer') <> 0 then
+  if (select count(*) from public.financial_transactions
+      where workspace_id = '10000000-0000-4000-8000-00000000b001' and transaction_type <> 'transfer') <> 0 then
     raise exception 'Loan distorted ordinary transaction totals';
   end if;
   if pg_catalog.has_table_privilege('authenticated', 'public.personal_loans', 'SELECT') then
@@ -107,7 +115,8 @@ begin
   if not public.void_last_telegram_loan_movement('111111111', last_id) then
     raise exception 'Last principal could not be voided';
   end if;
-  if exists (select 1 from public.personal_loans where original_minor = 1000 and status <> 'VOIDED') then
+  if exists (select 1 from public.personal_loans where workspace_id = '10000000-0000-4000-8000-00000000b001'
+      and original_minor = 1000 and status <> 'VOIDED') then
     raise exception 'Voided principal remains open';
   end if;
   if not exists (select 1 from public.transaction_events where event_type = 'voided'

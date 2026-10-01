@@ -24,8 +24,8 @@ importers:
         specifier: 16.6.1
         version: 16.6.1
       fastify:
-        specifier: ^5.11.2
-        version: 5.11.2
+        specifier: ^5.12.2
+        version: 5.12.2
       fflate:
         specifier: 0.8.2
         version: 0.8.2
@@ -858,8 +858,8 @@ packages:
   fast-uri@4.2.1:
     resolution: {integrity: sha512-TmHQgewjHtMq1E5QKA0tOE0yeYGQs25KZC/ziJpubRtWI15W92e6vPFydWOeZBVROSHBYw/QhD9d5OefdD6LDg==}
 
-  fastify@5.11.2:
-    resolution: {integrity: sha512-i/eJG7nXR9OkbFgoX4jFiPOHoRq0rXqDACVAXELh5Fdg6BFBErIVZ8MyibGCwup9Go1pYrxZJ0ogIub8vVdEcQ==}
+  fastify@5.12.2:
+    resolution: {integrity: sha512-npAgfhAigNiLOhCZEg7uFWThMrYoiDX/7/VyzicXSrVSXz6K/KYekW+QpOk7WOnZER0U7MmjvoDHV6qO5x4wKg==}
 
   fastq@1.20.3:
     resolution: {integrity: sha512-XKv5nnLs6nLF71NgiKJLIZFLkPyIEuOselLG7ujZnGrRfQK8HpvY+WqKhAJUAdLomwVHErVS4LfxFlPq0/FTAw==}
@@ -2114,7 +2114,7 @@ snapshots:
 
   fast-uri@4.2.1: {}
 
-  fastify@5.11.2:
+  fastify@5.12.2:
     dependencies:
       '@fastify/ajv-compiler': 4.0.6
       '@fastify/error': 4.2.0
