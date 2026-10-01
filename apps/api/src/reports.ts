@@ -5,10 +5,11 @@ import { supabase } from './supabase.js';
 import { AccessRevokedError, assertActiveUserWorkspaceAccess, assertTelegramPrincipalAccess } from './access-control.js';
 import { safeErrorLog } from './safe-log.js';
 import { renderMonthlyChart } from './report-chart.js';
+import { formatLoanSnapshot, workspaceLoanSnapshot, type LoanSnapshot } from './loan-service.js';
 
 const reportTimeZone = 'Europe/Bratislava';
 
-export type ReportTransaction = { id: string; transaction_type: 'income' | 'expense'; amount_minor: number; currency_code: string };
+export type ReportTransaction = { id: string; transaction_type: 'income' | 'expense' | 'transfer'; amount_minor: number; currency_code: string };
 type CategoryAssignmentRow = { transaction_id: string; category: { name: string; slug: string } | { name: string; slug: string }[] | null };
 type WorkspaceRow = { id: string; base_currency_code: string };
 type MembershipRow = { workspace_id: string; user_id: string; role: string };
@@ -30,6 +31,7 @@ export type MonthlyReport = {
   expenseMinor: number;
   balanceMinor: number;
   categories: CategorySpend[];
+  loans?: LoanSnapshot;
 };
 
 function formatCurrency(amountMinor: number, currencyCode: string): string {
@@ -156,12 +158,14 @@ async function buildReportForPeriod(workspaceId: string, currencyCode: string, p
 
   const summary = summarizeReportTransactions(transactions, assignmentByTransaction);
 
+  const loans = await workspaceLoanSnapshot(workspaceId);
   return {
     periodStart: period.start,
     periodEnd: period.end,
     monthLabel: period.label,
     currencyCode,
     ...summary,
+    ...(loans.entries.length ? { loans } : {}),
   };
 }
 
@@ -181,7 +185,7 @@ function reportNumbers(report: MonthlyReport, previousExpenseMinor?: number): st
   return `Mesiac: ${report.monthLabel}. Príjmy: ${formatCurrency(report.incomeMinor, report.currencyCode)}. Výdavky: ${formatCurrency(report.expenseMinor, report.currencyCode)}. Bilancia: ${formatCurrency(report.balanceMinor, report.currencyCode)}.${trend} Top kategórie: ${categories}.`;
 }
 
-function telegramCaption(report: MonthlyReport, commentary: string): string {
+export function telegramCaption(report: MonthlyReport, commentary: string): string {
   const categoryLines = report.categories.slice(0, 8).map((item) => {
     const share = report.expenseMinor > 0 ? Math.round((item.amountMinor / report.expenseMinor) * 100) : 0;
     return `• ${htmlEscape(item.name)}: ${htmlEscape(formatCurrency(item.amountMinor, report.currencyCode))} (${share} %)`;
@@ -200,6 +204,7 @@ function telegramCaption(report: MonthlyReport, commentary: string): string {
     ...(categoryLines.length > 0 ? categoryLines : ['• Zatiaľ žiadne výdavky']),
     '',
     htmlEscape(commentary),
+    ...(report.loans?.entries.length ? ['', htmlEscape(formatLoanSnapshot(report.loans))] : []),
   ].join('\n');
 }
 
@@ -209,7 +214,8 @@ function htmlEscape(value: string): string {
 
 export function reportEmailHtml(report: MonthlyReport, commentary: string): string {
   const categoryRows = report.categories.map((item) => `<tr><td>${htmlEscape(item.name)}</td><td style="text-align:right">${htmlEscape(formatCurrency(item.amountMinor, report.currencyCode))}</td></tr>`).join('');
-  return `<!doctype html><html><body style="font-family:Arial,sans-serif;color:#111827"><h1>Mesačný prehľad – ${htmlEscape(report.monthLabel)}</h1><img src="cid:ofa-monthly-chart" alt="Graf výdavkov" style="max-width:100%;height:auto"><table style="border-collapse:collapse;margin:16px 0"><tr><td>Príjmy</td><td>${htmlEscape(formatCurrency(report.incomeMinor, report.currencyCode))}</td></tr><tr><td>Výdavky</td><td>${htmlEscape(formatCurrency(report.expenseMinor, report.currencyCode))}</td></tr><tr><td><strong>Bilancia</strong></td><td><strong>${htmlEscape(formatCurrency(report.balanceMinor, report.currencyCode))}</strong></td></tr></table><p>${htmlEscape(commentary)}</p><h2>Výdavky podľa kategórií</h2><table style="border-collapse:collapse">${categoryRows || '<tr><td>Bez výdavkov</td><td></td></tr>'}</table></body></html>`;
+  const loanSection = report.loans?.entries.length ? `<h2>Pôžičky</h2><p>${htmlEscape(formatLoanSnapshot(report.loans)).replaceAll('\n', '<br>')}</p>` : '';
+  return `<!doctype html><html><body style="font-family:Arial,sans-serif;color:#111827"><h1>Mesačný prehľad – ${htmlEscape(report.monthLabel)}</h1><img src="cid:ofa-monthly-chart" alt="Graf výdavkov" style="max-width:100%;height:auto"><table style="border-collapse:collapse;margin:16px 0"><tr><td>Príjmy</td><td>${htmlEscape(formatCurrency(report.incomeMinor, report.currencyCode))}</td></tr><tr><td>Výdavky</td><td>${htmlEscape(formatCurrency(report.expenseMinor, report.currencyCode))}</td></tr><tr><td><strong>Bilancia</strong></td><td><strong>${htmlEscape(formatCurrency(report.balanceMinor, report.currencyCode))}</strong></td></tr></table><p>${htmlEscape(commentary)}</p><h2>Výdavky podľa kategórií</h2><table style="border-collapse:collapse">${categoryRows || '<tr><td>Bez výdavkov</td><td></td></tr>'}</table>${loanSection}</body></html>`;
 }
 
 export function reportEmailPayload(report: MonthlyReport, commentary: string, chartImage: Buffer, recipient: string, sender: string) {
@@ -502,7 +508,7 @@ export async function sendMonthlyReports(
   return { delivered, skipped, failed };
 }
 
-function weeklyTelegramCaption(report: MonthlyReport): string {
+export function weeklyTelegramCaption(report: MonthlyReport): string {
   const topCategories = report.categories.slice(0, 3).map((item) => {
     const share = report.expenseMinor > 0 ? Math.round((item.amountMinor / report.expenseMinor) * 100) : 0;
     return `• ${htmlEscape(item.name)}: ${htmlEscape(formatCurrency(item.amountMinor, report.currencyCode))} (${share} %)`;
@@ -523,6 +529,7 @@ function weeklyTelegramCaption(report: MonthlyReport): string {
     ...(topCategories.length > 0 ? topCategories : ['• Zatiaľ žiadne výdavky']),
     '',
     insight,
+    ...(report.loans?.entries.length ? ['', htmlEscape(formatLoanSnapshot(report.loans))] : []),
   ].join('\n');
 }
 

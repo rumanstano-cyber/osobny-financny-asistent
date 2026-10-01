@@ -92,6 +92,8 @@ async function cleanUpExpiredPrivacyMetadata(): Promise<{ purgedReceipts: number
   if (receiptError) throw new Error(receiptError.message);
   const { error: metadataError } = await supabase.rpc('cleanup_privacy_metadata', { p_limit: 100 });
   if (metadataError) throw new Error(metadataError.message);
+  const { error: loanPendingError } = await supabase.rpc('cleanup_expired_loan_pending', { p_limit: 100 });
+  if (loanPendingError) throw new Error(loanPendingError.message);
   return { purgedReceipts: Number(purgedReceipts ?? 0) };
 }
 

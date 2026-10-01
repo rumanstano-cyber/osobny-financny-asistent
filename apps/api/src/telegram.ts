@@ -71,6 +71,8 @@ import {
 import { AccessRevokedError, assertTelegramPrincipalAccess } from './access-control.js';
 import { ReceiptPersistenceError } from './receipt-errors.js';
 import { safeErrorLog } from './safe-log.js';
+import { findPersonMatches, parseLoanIntent, type LoanIntent } from './loan-intents.js';
+import { decideLoanWrite, ensureTelegramLoanWorkspace, formatLoanAmount, formatLoanSnapshot, lastLoanMovement, LoanWriteConflict, loanSnapshot, recordLoanWrite, telegramLoanContext, voidLastLoan, type LoanContext } from './loan-service.js';
 import { deliverFirstUsePrivacyNotice } from './privacy-notice.js';
 
 type RpcResult = { transaction_id: string; workspace_id: string; was_duplicate: boolean };
@@ -380,10 +382,159 @@ async function requestLastTransactionVoid(ctx: Context): Promise<void> {
     await ctx.reply('Zatiaľ nie je k dispozícii žiadny potvrdený zápis na zrušenie.');
     return;
   }
+  if (last.transaction_type === 'transfer') {
+    const context = await telegramLoanContext(String(ctx.from.id));
+    const movement = context ? await lastLoanMovement(context, last.transaction_id) : null;
+    if (!movement) {
+      await ctx.reply('Posledný prevod nie je možné týmto spôsobom zrušiť.');
+      return;
+    }
+    await ctx.reply(`⚠️ Zrušiť posledný pohyb pôžičky ${formatLoanAmount(Number(movement.amount_minor), movement.currency_code)}?`, {
+      reply_markup: new InlineKeyboard().text('Áno, zrušiť', `loan:void:${movement.id}`).text('Ponechať', 'txn:keep'),
+    });
+    return;
+  }
   const keyboard = new InlineKeyboard()
     .text('Áno, zrušiť', `txn:void:${last.transaction_id}`)
     .text('Ponechať', 'txn:keep');
   await ctx.reply(`⚠️ Naozaj chcete zrušiť posledný zápis?\n${lastTransactionLabel(last)}`, { reply_markup: keyboard });
+}
+
+type PendingLoan = {
+  user_id: string; workspace_id: string; intent: 'missing_name' | 'ambiguous_name';
+  kind: 'principal' | 'repayment'; direction: 'lent' | 'borrowed';
+  amount_minor: number; currency_code: string; due_on: string | null;
+  original_update_id: string; original_message_id: string; original_chat_id: string;
+  candidate_ids: string[] | null; expires_at: string;
+};
+
+async function loadPendingLoan(context: LoanContext): Promise<PendingLoan | null> {
+  const { data, error } = await supabase.from('telegram_loan_pending_states').select('*')
+    .eq('user_id', context.userId).eq('workspace_id', context.workspaceId)
+    .gt('expires_at', new Date().toISOString()).maybeSingle();
+  if (error) throw new Error(error.message);
+  return data as PendingLoan | null;
+}
+
+async function savePendingLoan(context: LoanContext, ctx: Context, intent: Exclude<LoanIntent, null | { kind: 'status' }>, reason: 'missing_name' | 'ambiguous_name', candidateIds: string[] | null): Promise<void> {
+  if (!ctx.message || !ctx.chat) return;
+  const { error } = await supabase.from('telegram_loan_pending_states').upsert({
+    user_id: context.userId, workspace_id: context.workspaceId, intent: reason,
+    kind: intent.kind, direction: intent.direction, amount_minor: intent.amountMinor,
+    currency_code: intent.currencyCode, due_on: intent.dueOn,
+    original_update_id: String(ctx.update.update_id), original_message_id: String(ctx.message.message_id),
+    original_chat_id: String(ctx.chat.id), candidate_ids: candidateIds,
+    expires_at: new Date(Date.now() + 15 * 60_000).toISOString(),
+  }, { onConflict: 'user_id' });
+  if (error) throw new Error(error.message);
+}
+
+async function clearPendingLoan(context: LoanContext): Promise<void> {
+  const { error } = await supabase.from('telegram_loan_pending_states').delete()
+    .eq('user_id', context.userId).eq('workspace_id', context.workspaceId);
+  if (error) throw new Error(error.message);
+}
+
+async function handleLoanText(ctx: Context, text: string): Promise<boolean> {
+  if (!ctx.from || !ctx.message || !ctx.chat) return false;
+  const intent = parseLoanIntent(text);
+  if (!intent && !/^[\p{L}' -]{2,120}$/u.test(text.trim())) return false;
+  let context = await telegramLoanContext(String(ctx.from.id));
+  if (!context) {
+    if (!intent) return false;
+    if (intent.kind === 'status' || intent.kind === 'repayment') {
+      await ctx.reply('Momentálne nemáš evidovanú žiadnu otvorenú pôžičku.');
+      return true;
+    }
+    await ensureTelegramLoanWorkspace(String(ctx.from.id), name(ctx), intent.currencyCode);
+    context = await telegramLoanContext(String(ctx.from.id));
+    if (!context) throw new Error('Telegram loan workspace was not available after creation');
+  }
+  const pending = await loadPendingLoan(context);
+  if (pending && !intent && /^[\p{L}' -]{2,120}$/u.test(text.trim())) {
+    let choice: { id: string; name: string } | null = null;
+    if (pending.intent === 'ambiguous_name') {
+      const { data, error } = await supabase.from('loan_counterparties').select('id, name')
+        .eq('workspace_id', context.workspaceId).in('id', pending.candidate_ids ?? []);
+      if (error) throw new Error(error.message);
+      const matches = findPersonMatches(text, data ?? []);
+      if (matches.length !== 1) {
+        await ctx.reply(`Prosím, napíš celé meno: ${(data ?? []).map((person) => person.name).join(' alebo ')}.`);
+        return true;
+      }
+      choice = matches[0];
+    }
+    const continued = {
+      kind: pending.kind, direction: pending.direction, name: choice?.name ?? text.trim(),
+      amountMinor: Number(pending.amount_minor), currencyCode: pending.currency_code, dueOn: pending.due_on,
+    } as Exclude<LoanIntent, null | { kind: 'status' }>;
+    const decision = await decideLoanWrite(context, continued);
+    if (decision.kind !== 'ready') {
+      await ctx.reply('Pôžičku sa nepodarilo jednoznačne priradiť. Napíš, prosím, celú vetu znova.');
+      await clearPendingLoan(context);
+      return true;
+    }
+    let saved;
+    try { saved = await recordLoanWrite(String(ctx.from.id), context, {
+      chatId: pending.original_chat_id, messageId: pending.original_message_id,
+      updateId: pending.original_update_id, occurredAt: new Date(ctx.message.date * 1000).toISOString(),
+    }, continued, decision); } catch (error) {
+      if (!(error instanceof LoanWriteConflict)) throw error;
+      await ctx.reply('Zostatok pôžičky sa medzitým zmenil. Zápis som nevykonal; pošli prosím celú vetu znova.');
+      await clearPendingLoan(context);
+      return true;
+    }
+    await clearPendingLoan(context);
+    if (saved) await ctx.reply(loanSavedText(continued, saved.counterparty_name, Number(saved.remaining_minor)));
+    return true;
+  }
+  if (!intent) return false;
+  if (intent.kind === 'status') {
+    await ctx.reply(formatLoanSnapshot(await loanSnapshot(context), intent.direction, intent.name));
+    return true;
+  }
+  const decision = await decideLoanWrite(context, intent);
+  if (decision.kind === 'missing_name') {
+    await savePendingLoan(context, ctx, intent, 'missing_name', null);
+    await ctx.reply(intent.direction === 'lent'
+      ? `Komu si požičal ${formatLoanAmount(intent.amountMinor, intent.currencyCode)}?`
+      : `Od koho si si požičal ${formatLoanAmount(intent.amountMinor, intent.currencyCode)}?`);
+    return true;
+  }
+  if (decision.kind === 'ambiguous') {
+    await savePendingLoan(context, ctx, intent, 'ambiguous_name', (decision.candidates ?? []).map((candidate) => candidate.id));
+    await ctx.reply(`Myslíš ${(decision.candidates ?? []).map((candidate) => candidate.name).join(' alebo ')}?`);
+    return true;
+  }
+  if (decision.kind === 'missing_loan') {
+    await ctx.reply('Pre túto osobu nemáš evidovaný otvorený dlh v uvedenej mene. Skontroluj meno a sumu.');
+    return true;
+  }
+  if (decision.kind === 'overpayment') {
+    await ctx.reply(`Evidovaný dlh je iba ${formatLoanAmount(decision.balanceMinor ?? 0, intent.currencyCode)}. Zápis som nevykonal. Napíš správnu sumu alebo vysvetli rozdiel.`);
+    return true;
+  }
+  let saved;
+  try { saved = await recordLoanWrite(String(ctx.from.id), context, {
+    chatId: String(ctx.chat.id), messageId: String(ctx.message.message_id),
+    updateId: String(ctx.update.update_id), occurredAt: new Date(ctx.message.date * 1000).toISOString(),
+  }, intent, decision); } catch (error) {
+    if (!(error instanceof LoanWriteConflict)) throw error;
+    await ctx.reply('Zostatok pôžičky sa medzitým zmenil. Zápis som nevykonal; skontroluj aktuálny stav a pošli správnu sumu.');
+    return true;
+  }
+  if (saved) await ctx.reply(loanSavedText(intent, saved.counterparty_name, Number(saved.remaining_minor)));
+  return true;
+}
+
+function loanSavedText(intent: Exclude<LoanIntent, null | { kind: 'status' }>, name: string, remainingMinor: number): string {
+  if (intent.kind === 'principal') return intent.direction === 'lent'
+    ? `Zapísané. ${name} ti dlhuje ${formatLoanAmount(remainingMinor, intent.currencyCode)}.`
+    : `Zapísané. Tvoj dlh: ${name} — ${formatLoanAmount(remainingMinor, intent.currencyCode)}.`;
+  if (remainingMinor === 0) return `Pôžička s ${name} je vyrovnaná. ✅`;
+  return intent.direction === 'lent'
+    ? `${name} vrátil ${formatLoanAmount(intent.amountMinor, intent.currencyCode)}. Zostáva ${formatLoanAmount(remainingMinor, intent.currencyCode)}.`
+    : `Vrátil si ${formatLoanAmount(intent.amountMinor, intent.currencyCode)} (${name}). Zostáva ${formatLoanAmount(remainingMinor, intent.currencyCode)}.`;
 }
 
 async function correctLastTransaction(telegramUserId: string, text: string, categorizationInput: Omit<CategorizationInput, 'telegramUserId'> = {}): Promise<CorrectedTransaction | null> {
@@ -1091,6 +1242,21 @@ export function createTelegramBot(): Bot {
     await ctx.answerCallbackQuery({ text: 'Zápis ostáva bez zmeny.' });
     try { await ctx.editMessageReplyMarkup({ reply_markup: undefined }); } catch { /* the original message may no longer be editable */ }
   });
+  bot.callbackQuery(/^loan:void:([0-9a-f-]{36})$/i, async (ctx) => {
+    if (!claimUpdate(ctx.update.update_id)) return;
+    try {
+      await ctx.answerCallbackQuery();
+      if (!ctx.from || ctx.chat?.type !== 'private') return;
+      const cancelled = await voidLastLoan(String(ctx.from.id), ctx.match[1]);
+      try { await ctx.editMessageReplyMarkup({ reply_markup: undefined }); } catch { /* old message */ }
+      await ctx.reply(cancelled
+        ? '✅ Posledný pohyb pôžičky bol zrušený. Stav dlhu je prepočítaný.'
+        : 'Tento pohyb už nemožno zrušiť, napríklad ak na pôžičku nadväzujú splátky. Napíš podporu, aby sme opravu vykonali bezpečne.');
+    } catch (error) {
+      console.error('Telegram loan void failed', { updateId: ctx.update.update_id, error: safeErrorLog(error) });
+      await ctx.reply('Pohyb sa nepodarilo zrušiť. Skús to, prosím, neskôr.');
+    }
+  });
   bot.callbackQuery(/^bg([olncxs]):([0-9a-f-]{36})$/i, async (ctx) => {
     const callbackData = ctx.callbackQuery.data;
     const match = /^bg([olncxs]):([0-9a-f-]{36})$/i.exec(callbackData);
@@ -1326,9 +1492,16 @@ export function createTelegramBot(): Bot {
         return;
       }
 
+      if (await handleLoanText(ctx, text)) return;
+
       if (await handleBudgetTextIntent(ctx, text)) return;
 
       if (/^oprav\b/iu.test(text.trim())) {
+        const last = await getLastTransaction(telegramUserId);
+        if (last?.transaction_type === 'transfer') {
+          await ctx.reply('Posledný zápis je pohyb pôžičky. Napíš „Zruš posledný zápis“ a potom pošli správnu vetu. Ak už má nadväzujúce splátky, kontaktuj podporu.');
+          return;
+        }
         const replacement = correctionText(text);
         if (!replacement) {
           const last = await getLastTransaction(String(ctx.from.id));

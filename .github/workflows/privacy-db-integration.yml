@@ -5,6 +5,7 @@ on:
     paths:
       - 'supabase/migrations/**'
       - 'apps/api/scripts/privacy-db-integration.sql'
+      - 'apps/api/scripts/loan-db-integration.sql'
       - 'apps/api/scripts/privacy-db-bootstrap.sql'
       - '.github/workflows/privacy-db-integration.yml'
   workflow_dispatch:
@@ -66,3 +67,12 @@ jobs:
           docker exec -i "$POSTGRES_CONTAINER_ID" \
             psql -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -f - \
             < apps/api/scripts/privacy-db-integration.sql
+      - name: Verify isolated loan ledger invariants
+        shell: bash
+        env:
+          POSTGRES_CONTAINER_ID: ${{ job.services.postgres.id }}
+        run: |
+          set -euo pipefail
+          docker exec -i "$POSTGRES_CONTAINER_ID" \
+            psql -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -f - \
+            < apps/api/scripts/loan-db-integration.sql
