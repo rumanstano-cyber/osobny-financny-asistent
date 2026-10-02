@@ -5,10 +5,11 @@ import { supabase } from './supabase.js';
 import { AccessRevokedError, assertActiveUserWorkspaceAccess, assertTelegramPrincipalAccess } from './access-control.js';
 import { safeErrorLog } from './safe-log.js';
 import { renderMonthlyChart } from './report-chart.js';
+import { formatLoanSnapshot, workspaceLoanSnapshot, type LoanSnapshot } from './loan-service.js';
 
 const reportTimeZone = 'Europe/Bratislava';
 
-export type ReportTransaction = { id: string; transaction_type: 'income' | 'expense'; amount_minor: number; currency_code: string };
+export type ReportTransaction = { id: string; transaction_type: 'income' | 'expense' | 'transfer'; amount_minor: number; currency_code: string };
 type CategoryAssignmentRow = { transaction_id: string; category: { name: string; slug: string } | { name: string; slug: string }[] | null };
 type WorkspaceRow = { id: string; base_currency_code: string };
 type MembershipRow = { workspace_id: string; user_id: string; role: string };
@@ -30,6 +31,7 @@ export type MonthlyReport = {
   expenseMinor: number;
   balanceMinor: number;
   categories: CategorySpend[];
+  loans?: LoanSnapshot;
 };
 
 function formatCurrency(amountMinor: number, currencyCode: string): string {
@@ -156,12 +158,14 @@ async function buildReportForPeriod(workspaceId: string, currencyCode: string, p
 
   const summary = summarizeReportTransactions(transactions, assignmentByTransaction);
 
+  const loans = await workspaceLoanSnapshot(workspaceId);
   return {
     periodStart: period.start,
     periodEnd: period.end,
     monthLabel: period.label,
     currencyCode,
     ...summary,
+    ...(loans.entries.length ? { loans } : {}),
   };
 }
 
@@ -181,7 +185,7 @@ function reportNumbers(report: MonthlyReport, previousExpenseMinor?: number): st
   return `Mesiac: ${report.monthLabel}. Príjmy: ${formatCurrency(report.incomeMinor, report.currencyCode)}. Výdavky: ${formatCurrency(report.expenseMinor, report.currencyCode)}. Bilancia: ${formatCurrency(report.balanceMinor, report.currencyCode)}.${trend} Top kategórie: ${categories}.`;
 }
 
-function telegramCaption(report: MonthlyReport, commentary: string): string {
+export function telegramCaption(report: MonthlyReport, commentary: string): string {
   const categoryLines = report.categories.slice(0, 8).map((item) => {
     const share = report.expenseMinor > 0 ? Math.round((item.amountMinor / report.expenseMinor) * 100) : 0;
     return `• ${htmlEscape(item.name)}: ${htmlEscape(formatCurrency(item.amountMinor, report.currencyCode))} (${share} %)`;
@@ -200,7 +204,35 @@ function telegramCaption(report: MonthlyReport, commentary: string): string {
     ...(categoryLines.length > 0 ? categoryLines : ['• Zatiaľ žiadne výdavky']),
     '',
     htmlEscape(commentary),
+    ...(report.loans?.entries.length ? ['', htmlEscape(formatLoanSnapshot(report.loans))] : []),
   ].join('\n');
+}
+
+export function telegramReportParts(report: MonthlyReport, commentary: string): { caption: string | undefined; messages: string[] } {
+  const base = telegramCaption({ ...report, loans: undefined }, commentary);
+  const loanText = report.loans?.entries.length ? htmlEscape(formatLoanSnapshot(report.loans)) : '';
+  const messages = splitTelegramReportText(loanText);
+  if (base.length > 1000) {
+    messages.unshift(...splitTelegramReportText(base));
+    return { caption: undefined, messages };
+  }
+  return { caption: base, messages };
+}
+
+export function splitTelegramReportText(value: string): string[] {
+  if (!value) return [];
+  const lines = value.split('\n');
+  const messages: string[] = [];
+  let current = '';
+  for (const line of lines) {
+    if (current && current.length + line.length + 1 > 4000) {
+      messages.push(current);
+      current = '';
+    }
+    current = current ? `${current}\n${line}` : line;
+  }
+  if (current) messages.push(current);
+  return messages;
 }
 
 function htmlEscape(value: string): string {
@@ -209,7 +241,8 @@ function htmlEscape(value: string): string {
 
 export function reportEmailHtml(report: MonthlyReport, commentary: string): string {
   const categoryRows = report.categories.map((item) => `<tr><td>${htmlEscape(item.name)}</td><td style="text-align:right">${htmlEscape(formatCurrency(item.amountMinor, report.currencyCode))}</td></tr>`).join('');
-  return `<!doctype html><html><body style="font-family:Arial,sans-serif;color:#111827"><h1>Mesačný prehľad – ${htmlEscape(report.monthLabel)}</h1><img src="cid:ofa-monthly-chart" alt="Graf výdavkov" style="max-width:100%;height:auto"><table style="border-collapse:collapse;margin:16px 0"><tr><td>Príjmy</td><td>${htmlEscape(formatCurrency(report.incomeMinor, report.currencyCode))}</td></tr><tr><td>Výdavky</td><td>${htmlEscape(formatCurrency(report.expenseMinor, report.currencyCode))}</td></tr><tr><td><strong>Bilancia</strong></td><td><strong>${htmlEscape(formatCurrency(report.balanceMinor, report.currencyCode))}</strong></td></tr></table><p>${htmlEscape(commentary)}</p><h2>Výdavky podľa kategórií</h2><table style="border-collapse:collapse">${categoryRows || '<tr><td>Bez výdavkov</td><td></td></tr>'}</table></body></html>`;
+  const loanSection = report.loans?.entries.length ? `<h2>Pôžičky</h2><p>${htmlEscape(formatLoanSnapshot(report.loans)).replaceAll('\n', '<br>')}</p>` : '';
+  return `<!doctype html><html><body style="font-family:Arial,sans-serif;color:#111827"><h1>Mesačný prehľad – ${htmlEscape(report.monthLabel)}</h1><img src="cid:ofa-monthly-chart" alt="Graf výdavkov" style="max-width:100%;height:auto"><table style="border-collapse:collapse;margin:16px 0"><tr><td>Príjmy</td><td>${htmlEscape(formatCurrency(report.incomeMinor, report.currencyCode))}</td></tr><tr><td>Výdavky</td><td>${htmlEscape(formatCurrency(report.expenseMinor, report.currencyCode))}</td></tr><tr><td><strong>Bilancia</strong></td><td><strong>${htmlEscape(formatCurrency(report.balanceMinor, report.currencyCode))}</strong></td></tr></table><p>${htmlEscape(commentary)}</p><h2>Výdavky podľa kategórií</h2><table style="border-collapse:collapse">${categoryRows || '<tr><td>Bez výdavkov</td><td></td></tr>'}</table>${loanSection}</body></html>`;
 }
 
 export function reportEmailPayload(report: MonthlyReport, commentary: string, chartImage: Buffer, recipient: string, sender: string) {
@@ -441,7 +474,9 @@ export async function sendMonthlyReports(
           try {
             await assertActiveUserWorkspaceAccess(membership.user_id, workspace.id);
             await assertTelegramPrincipalAccess(account.external_account_id, { workspaceId: workspace.id });
-            await sendTelegramWithRetry(() => bot.api.sendPhoto(account.external_account_id, new InputFile(chartImage, 'mesacny-graf.png'), { caption: telegramCaption(report, commentary), parse_mode: 'HTML' }));
+            const parts = telegramReportParts(report, commentary);
+            await sendTelegramWithRetry(() => bot.api.sendPhoto(account.external_account_id, new InputFile(chartImage, 'mesacny-graf.png'), { caption: parts.caption, parse_mode: 'HTML' }));
+            for (const message of parts.messages) await sendTelegramWithRetry(() => bot.api.sendMessage(account.external_account_id, message, { parse_mode: 'HTML' }));
             delivery = await markChannelDelivered(delivery, telegramChannel);
           } catch (error) {
             if (error instanceof AccessRevokedError) {
@@ -502,7 +537,7 @@ export async function sendMonthlyReports(
   return { delivered, skipped, failed };
 }
 
-function weeklyTelegramCaption(report: MonthlyReport): string {
+export function weeklyTelegramCaption(report: MonthlyReport): string {
   const topCategories = report.categories.slice(0, 3).map((item) => {
     const share = report.expenseMinor > 0 ? Math.round((item.amountMinor / report.expenseMinor) * 100) : 0;
     return `• ${htmlEscape(item.name)}: ${htmlEscape(formatCurrency(item.amountMinor, report.currencyCode))} (${share} %)`;
@@ -523,6 +558,7 @@ function weeklyTelegramCaption(report: MonthlyReport): string {
     ...(topCategories.length > 0 ? topCategories : ['• Zatiaľ žiadne výdavky']),
     '',
     insight,
+    ...(report.loans?.entries.length ? ['', htmlEscape(formatLoanSnapshot(report.loans))] : []),
   ].join('\n');
 }
 
@@ -595,7 +631,9 @@ export async function sendWeeklyReports(bot: Bot, referenceDate = new Date()): P
         try {
           await assertActiveUserWorkspaceAccess(membership.user_id, workspace.id);
           await assertTelegramPrincipalAccess(account.external_account_id, { workspaceId: workspace.id });
-          await sendTelegramWithRetry(() => bot.api.sendMessage(account.external_account_id, weeklyTelegramCaption(report), { parse_mode: 'HTML' }));
+          for (const message of splitTelegramReportText(weeklyTelegramCaption(report))) {
+            await sendTelegramWithRetry(() => bot.api.sendMessage(account.external_account_id, message, { parse_mode: 'HTML' }));
+          }
           delivery = await markChannelDelivered(delivery, telegramChannel);
         } catch (error) {
           if (error instanceof AccessRevokedError) {
@@ -654,17 +692,19 @@ export async function currentMonthSummary(telegramUserId: string): Promise<strin
   try { return `${summary}\n${await monthlyCommentary(summary, `telegram:${telegramUserId}`)}`; } catch { return summary; }
 }
 
-export type CurrentMonthVisualReport = { chartImage: Buffer | null; caption: string };
+export type CurrentMonthVisualReport = { chartImage: Buffer | null; caption: string; messages: string[] };
 
 export async function currentMonthVisualReport(telegramUserId: string): Promise<CurrentMonthVisualReport> {
   const lookup = await loadCurrentMonthReport(telegramUserId);
-  if (!lookup.report) return { chartImage: null, caption: lookup.unavailableMessage };
+  if (!lookup.report) return { chartImage: null, caption: lookup.unavailableMessage, messages: [] };
 
   const summary = reportNumbers(lookup.report);
   let commentary = '';
   try { commentary = await monthlyCommentary(summary, `telegram:${telegramUserId}`); } catch { commentary = 'Prehľad je pripravený. Odporúča sa sledovať najväčšie kategórie výdavkov.'; }
+  const parts = telegramReportParts(lookup.report, commentary);
   return {
     chartImage: lookup.report.categories.length > 0 ? await renderMonthlyChart(lookup.report) : null,
-    caption: telegramCaption(lookup.report, commentary),
+    caption: parts.caption ?? '',
+    messages: parts.messages,
   };
 }

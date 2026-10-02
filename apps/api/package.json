@@ -16,7 +16,7 @@
     "@jimp/plugin-print": "1.6.1",
     "@supabase/supabase-js": "^2.49.1",
     "dotenv": "16.6.1",
-    "fastify": "^5.11.2",
+    "fastify": "^5.12.2",
     "fflate": "0.8.2",
     "grammy": "^1.35.0",
     "jimp": "1.6.1",

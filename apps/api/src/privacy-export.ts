@@ -113,6 +113,15 @@ export async function collectPrivateExport(userId: string): Promise<{
   const ownTransactions = inActiveWorkspace(transactions, activeWorkspaceIds);
   const ownReceipts = inActiveWorkspace(receipts, activeWorkspaceIds);
   const ownProtections = inActiveWorkspace(protections, activeWorkspaceIds);
+  const ownLoans = inActiveWorkspace(await readAll('personal_loans', 'created_by_user_id', userId), activeWorkspaceIds);
+  const ownLoanMovements = inActiveWorkspace(await readAll('loan_movements', 'created_by_user_id', userId), activeWorkspaceIds);
+  const ownLoanPending = inActiveWorkspace(await readAll('telegram_loan_pending_states', 'user_id', userId), activeWorkspaceIds);
+  const loanIds = ownLoans.map((row) => String(row.id));
+  const movementIds = ownLoanMovements.map((row) => String(row.id));
+  const [loanAllocations, loanCounterparties] = await Promise.all([
+    readByIds('loan_allocations', 'movement_id', movementIds),
+    readByIds('loan_counterparties', 'id', [...new Set(ownLoans.map((row) => String(row.counterparty_id)))]),
+  ]);
 
   const transactionIds = ownTransactions.map((row) => String(row.id));
   const receiptIds = ownReceipts.map((row) => String(row.id));
@@ -144,6 +153,11 @@ export async function collectPrivateExport(userId: string): Promise<{
       receipts: ownReceipts,
       receipt_items: receiptItems,
       purchase_protections: ownProtections,
+      personal_loans: ownLoans,
+      loan_movements: ownLoanMovements,
+      loan_allocations: loanAllocations.filter((row) => loanIds.includes(String(row.loan_id))),
+      loan_counterparties: loanCounterparties.filter((row) => activeWorkspaceIds.has(String(row.workspace_id))),
+      pending_loan_clarifications: ownLoanPending,
       documents,
     },
     files,

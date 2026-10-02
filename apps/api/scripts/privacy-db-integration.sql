@@ -27,6 +27,13 @@ insert into public.financial_transactions (
   ('00000000-0000-4000-8000-00000000e001', '00000000-0000-4000-8000-00000000b001', '00000000-0000-4000-8000-00000000a001', 'expense', 1234, 'EUR', now(), 'Europe/Bratislava', 'manual', now()),
   ('00000000-0000-4000-8000-00000000e002', '00000000-0000-4000-8000-00000000b002', '00000000-0000-4000-8000-00000000a003', 'expense', 5678, 'EUR', now(), 'Europe/Bratislava', 'manual', now());
 
+insert into public.loan_counterparties (id, workspace_id, name, created_by_user_id) values
+  ('00000000-0000-4000-8000-00000000a101', '00000000-0000-4000-8000-00000000b001', 'Shared synthetic person', '00000000-0000-4000-8000-00000000a001'),
+  ('00000000-0000-4000-8000-00000000a102', '00000000-0000-4000-8000-00000000b002', 'Sole synthetic person', '00000000-0000-4000-8000-00000000a003');
+insert into public.personal_loans (id, workspace_id, counterparty_id, created_by_user_id, direction, original_minor, currency_code) values
+  ('00000000-0000-4000-8000-00000000a201', '00000000-0000-4000-8000-00000000b001', '00000000-0000-4000-8000-00000000a101', '00000000-0000-4000-8000-00000000a001', 'lent', 1000, 'EUR'),
+  ('00000000-0000-4000-8000-00000000a202', '00000000-0000-4000-8000-00000000b002', '00000000-0000-4000-8000-00000000a102', '00000000-0000-4000-8000-00000000a003', 'borrowed', 2000, 'EUR');
+
 insert into public.report_deliveries (
   id, workspace_id, report_type, period_start, period_end,
   base_currency_code, data_snapshot, status, sent_at
@@ -183,6 +190,7 @@ begin
   end loop;
 
   if not exists (select 1 from public.financial_transactions where id = '00000000-0000-4000-8000-00000000e001')
+     or not exists (select 1 from public.personal_loans where id = '00000000-0000-4000-8000-00000000a201')
      or not exists (select 1 from public.report_deliveries where id = '00000000-0000-4000-8000-00000000f001')
      or not exists (select 1 from public.ofa_receipts where id = '00000000-0000-4000-8000-00000000d001')
      or not exists (select 1 from public.stored_files where id = '00000000-0000-4000-8000-00000000c001') then
@@ -190,6 +198,7 @@ begin
   end if;
   if exists (select 1 from public.workspace_members where user_id = '00000000-0000-4000-8000-00000000a001')
      or exists (select 1 from public.workspaces where id = '00000000-0000-4000-8000-00000000b002')
+     or exists (select 1 from public.personal_loans where id = '00000000-0000-4000-8000-00000000a202')
      or exists (select 1 from public.financial_transactions where id = '00000000-0000-4000-8000-00000000e002') then
     raise exception 'Account or sole workspace was not erased';
   end if;
