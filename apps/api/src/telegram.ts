@@ -1551,10 +1551,11 @@ export function createTelegramBot(): Bot {
         const report = await currentMonthVisualReport(String(ctx.from.id));
         await assertTelegramPrincipalAccess(String(ctx.from.id));
         if (report.chartImage) {
-          await ctx.replyWithPhoto(new InputFile(report.chartImage, 'mesacny-graf.png'), { caption: report.caption, parse_mode: 'HTML' });
+          await ctx.replyWithPhoto(new InputFile(report.chartImage, 'mesacny-graf.png'), { caption: report.caption || undefined, parse_mode: 'HTML' });
         } else {
-          await ctx.reply(report.caption, { parse_mode: 'HTML' });
+          if (report.caption) await ctx.reply(report.caption, { parse_mode: 'HTML' });
         }
+        for (const message of report.messages) await ctx.reply(message, { parse_mode: 'HTML' });
         return;
       }
 

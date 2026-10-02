@@ -208,6 +208,33 @@ export function telegramCaption(report: MonthlyReport, commentary: string): stri
   ].join('\n');
 }
 
+export function telegramReportParts(report: MonthlyReport, commentary: string): { caption: string | undefined; messages: string[] } {
+  const base = telegramCaption({ ...report, loans: undefined }, commentary);
+  const loanText = report.loans?.entries.length ? htmlEscape(formatLoanSnapshot(report.loans)) : '';
+  const messages = splitTelegramReportText(loanText);
+  if (base.length > 1000) {
+    messages.unshift(...splitTelegramReportText(base));
+    return { caption: undefined, messages };
+  }
+  return { caption: base, messages };
+}
+
+export function splitTelegramReportText(value: string): string[] {
+  if (!value) return [];
+  const lines = value.split('\n');
+  const messages: string[] = [];
+  let current = '';
+  for (const line of lines) {
+    if (current && current.length + line.length + 1 > 4000) {
+      messages.push(current);
+      current = '';
+    }
+    current = current ? `${current}\n${line}` : line;
+  }
+  if (current) messages.push(current);
+  return messages;
+}
+
 function htmlEscape(value: string): string {
   return value.replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character] ?? character);
 }
@@ -447,7 +474,9 @@ export async function sendMonthlyReports(
           try {
             await assertActiveUserWorkspaceAccess(membership.user_id, workspace.id);
             await assertTelegramPrincipalAccess(account.external_account_id, { workspaceId: workspace.id });
-            await sendTelegramWithRetry(() => bot.api.sendPhoto(account.external_account_id, new InputFile(chartImage, 'mesacny-graf.png'), { caption: telegramCaption(report, commentary), parse_mode: 'HTML' }));
+            const parts = telegramReportParts(report, commentary);
+            await sendTelegramWithRetry(() => bot.api.sendPhoto(account.external_account_id, new InputFile(chartImage, 'mesacny-graf.png'), { caption: parts.caption, parse_mode: 'HTML' }));
+            for (const message of parts.messages) await sendTelegramWithRetry(() => bot.api.sendMessage(account.external_account_id, message, { parse_mode: 'HTML' }));
             delivery = await markChannelDelivered(delivery, telegramChannel);
           } catch (error) {
             if (error instanceof AccessRevokedError) {
@@ -602,7 +631,9 @@ export async function sendWeeklyReports(bot: Bot, referenceDate = new Date()): P
         try {
           await assertActiveUserWorkspaceAccess(membership.user_id, workspace.id);
           await assertTelegramPrincipalAccess(account.external_account_id, { workspaceId: workspace.id });
-          await sendTelegramWithRetry(() => bot.api.sendMessage(account.external_account_id, weeklyTelegramCaption(report), { parse_mode: 'HTML' }));
+          for (const message of splitTelegramReportText(weeklyTelegramCaption(report))) {
+            await sendTelegramWithRetry(() => bot.api.sendMessage(account.external_account_id, message, { parse_mode: 'HTML' }));
+          }
           delivery = await markChannelDelivered(delivery, telegramChannel);
         } catch (error) {
           if (error instanceof AccessRevokedError) {
@@ -661,17 +692,19 @@ export async function currentMonthSummary(telegramUserId: string): Promise<strin
   try { return `${summary}\n${await monthlyCommentary(summary, `telegram:${telegramUserId}`)}`; } catch { return summary; }
 }
 
-export type CurrentMonthVisualReport = { chartImage: Buffer | null; caption: string };
+export type CurrentMonthVisualReport = { chartImage: Buffer | null; caption: string; messages: string[] };
 
 export async function currentMonthVisualReport(telegramUserId: string): Promise<CurrentMonthVisualReport> {
   const lookup = await loadCurrentMonthReport(telegramUserId);
-  if (!lookup.report) return { chartImage: null, caption: lookup.unavailableMessage };
+  if (!lookup.report) return { chartImage: null, caption: lookup.unavailableMessage, messages: [] };
 
   const summary = reportNumbers(lookup.report);
   let commentary = '';
   try { commentary = await monthlyCommentary(summary, `telegram:${telegramUserId}`); } catch { commentary = 'Prehľad je pripravený. Odporúča sa sledovať najväčšie kategórie výdavkov.'; }
+  const parts = telegramReportParts(lookup.report, commentary);
   return {
     chartImage: lookup.report.categories.length > 0 ? await renderMonthlyChart(lookup.report) : null,
-    caption: telegramCaption(lookup.report, commentary),
+    caption: parts.caption ?? '',
+    messages: parts.messages,
   };
 }

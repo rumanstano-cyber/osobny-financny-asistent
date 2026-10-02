@@ -8,7 +8,7 @@ process.env.SUPABASE_SERVICE_ROLE_KEY ??= 'test-service-role';
 process.env.INTERNAL_CRON_SECRET ??= 'test-internal-cron-secret-32-chars';
 
 const { formatLoanSnapshot } = await import('./loan-service.js');
-const { summarizeReportTransactions, telegramCaption, weeklyTelegramCaption, reportEmailHtml } = await import('./reports.js');
+const { summarizeReportTransactions, telegramCaption, telegramReportParts, splitTelegramReportText, weeklyTelegramCaption, reportEmailHtml } = await import('./reports.js');
 
 test('natural Slovak loan messages distinguish cash movement direction', () => {
   assert.deepEqual(parseLoanIntent('Požičal som Janovi 150 €.'), {
@@ -86,4 +86,24 @@ test('weekly and monthly reports omit the loan section entirely without open loa
   assert.match(weeklyTelegramCaption(withLoan), /Pôžičky/u);
   assert.match(telegramCaption(withLoan, 'Komentár'), /Pôžičky/u);
   assert.match(reportEmailHtml(withLoan, 'Komentár'), /Pôžičky/u);
+});
+
+test('monthly loan balances are delivered outside the photo caption in bounded messages', () => {
+  const report = {
+    periodStart: new Date('2026-10-01'), periodEnd: new Date('2026-11-01'), monthLabel: 'október 2026',
+    currencyCode: 'EUR', incomeMinor: 0, expenseMinor: 0, balanceMinor: 0, categories: [],
+    loans: { entries: Array.from({ length: 300 }, (_, index) => ({
+      name: `Osoba ${index}`, direction: 'lent' as const, currencyCode: 'EUR', remainingMinor: 10_000, dueOn: null,
+    })) },
+  };
+  const parts = telegramReportParts(report, 'Komentár');
+  assert.ok(parts.caption && parts.caption.length <= 1000);
+  assert.doesNotMatch(parts.caption, /Pôžičky/u);
+  assert.ok(parts.messages.length > 1);
+  assert.ok(parts.messages.every((message) => message.length <= 4000));
+  assert.match(parts.messages.join('\n'), /Osoba 299/u);
+  const weeklyParts = splitTelegramReportText(weeklyTelegramCaption(report));
+  assert.ok(weeklyParts.length > 1);
+  assert.ok(weeklyParts.every((message) => message.length <= 4000));
+  assert.match(weeklyParts.join('\n'), /Osoba 299/u);
 });
