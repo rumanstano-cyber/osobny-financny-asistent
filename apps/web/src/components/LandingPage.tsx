@@ -81,6 +81,29 @@ export function LandingPage() {
         </div>
       </section>
 
+      <section className="loans-section section-wrap" aria-labelledby="loans-heading">
+        <div className="loans-copy">
+          <p className="landing-eyebrow">PÔŽIČKY</p>
+          <h2 id="loans-heading">Maj prehľad, komu si požičal a koľko ti ešte dlhuje.</h2>
+          <p>Žiadna tabuľka ani formulár. Stačí napísať asistentovi, čo sa stalo. Zapamätá si aj peniaze, ktoré si si požičal ty.</p>
+          <div className="feature-points">
+            <p><span aria-hidden="true">✓</span> Čiastočné splátky a aktuálny zostatok podľa osoby</p>
+            <p><span aria-hidden="true">✓</span> Kedykoľvek sa opýtaj: „Kto mi dlhuje?“ alebo „Koľko ešte dlhuje Jano?“</p>
+            <p><span aria-hidden="true">✓</span> Otvorené pôžičky v týždennom aj mesačnom prehľade</p>
+          </div>
+          <p className="loans-note">Pôžičky sú vedené oddelene, aby neskresľovali bežné príjmy a výdavky.</p>
+        </div>
+        <div className="warranty-chat-card" aria-label="Ukážka evidovania pôžičky v Telegrame">
+          <TelegramHeader />
+          <div className="telegram-chat loans-chat">
+            <ChatMessage from="user">Požičal som Janovi 150 €.</ChatMessage>
+            <ChatMessage><b>Zapísané.</b><span>Jano ti dlhuje 150 €.</span></ChatMessage>
+            <ChatMessage from="user">Jano mi vrátil 50 €.</ChatMessage>
+            <ChatMessage><b>Jano vrátil 50 €.</b><span>Zostáva 100 €.</span></ChatMessage>
+          </div>
+        </div>
+      </section>
+
       <section className="reports-section" id="reporty" aria-labelledby="reports-heading"><div className="section-wrap reports-layout"><div className="reports-copy"><p className="landing-eyebrow">PREHĽAD BEZ NÁMAHY</p><h2 id="reports-heading">Tvoje peniaze v pár jasných číslach.</h2><p>Týždenný report príde automaticky v pondelok do Telegramu. Mesačný prehľad dostaneš automaticky tiež; ak máš nastavený e-mail, príde aj tam.</p><div className="report-tags"><span>Automaticky</span><span>Príjmy a výdavky</span><span>Top kategórie</span></div></div><article className="report-preview" aria-label="Ukážka týždenného finančného reportu"><header><span>📊</span><div><b>Týždenný prehľad</b><small>2. – 8. september</small></div></header><div className="report-numbers"><div className="income-number"><span>Príjmy</span><b>+1 500,00 €</b></div><div className="expense-number"><span>Výdavky</span><b>−248,60 €</b></div><div><span>Bilancia</span><b>+1 251,40 €</b></div></div><div className="report-categories"><b>Top kategórie</b><p><span><i className="dot dot-green" />Potraviny</span><strong>98,40 €</strong></p><p><span><i className="dot dot-blue" />Reštaurácie</span><strong>64,20 €</strong></p><p><span><i className="dot dot-orange" />Auto</span><strong>60,00 €</strong></p></div><footer>Najvyššie výdavky boli na potraviny. Bilancia za tento týždeň je pozitívna.</footer></article></div></section>
 
       <section className="say-section section-wrap" aria-labelledby="say-heading"><div className="section-intro centered-intro"><p className="landing-eyebrow">ČO MÔŽEŠ NAPÍSAŤ</p><h2 id="say-heading">Takto jednoducho.</h2><p className="example-note">Toto sú len príklady. Napíš to vlastnými slovami.</p></div><div className="phrase-list"><span>„Káva 3,50 €“</span><span>„Nákup 42 €“</span><span>„Prišla mi výplata 1 500 €“</span><span>„Oprav kategóriu“</span><span>„Kávu daj do reštaurácie“</span><span>„Zruš posledný zápis“</span><span>„Vymaž poslednú transakciu“</span><span>„Nájdi mi bloček z Lidla“</span><span>„Aké boli výdavky tento mesiac?“</span></div></section>
