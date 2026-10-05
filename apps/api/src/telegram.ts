@@ -73,7 +73,7 @@ import { ReceiptPersistenceError } from './receipt-errors.js';
 import { safeErrorLog } from './safe-log.js';
 import { findPersonMatches, parseLoanIntent, type LoanIntent } from './loan-intents.js';
 import { decideLoanWrite, ensureTelegramLoanWorkspace, formatLoanAmount, formatLoanSnapshot, lastLoanMovement, LoanWriteConflict, loanSnapshot, recordLoanWrite, telegramLoanContext, voidLastLoan, type LoanContext } from './loan-service.js';
-import { deliverFirstUsePrivacyNotice } from './privacy-notice.js';
+import { acknowledgeTelegramPrivacyNotice, passTelegramPrivacyGate, TELEGRAM_PRIVACY_CONTINUE_CALLBACK, telegramPrivacyNoticeText } from './privacy-notice.js';
 
 type RpcResult = { transaction_id: string; workspace_id: string; was_duplicate: boolean };
 type BatchRpcResult = RpcResult & { item_index: number };
@@ -1107,13 +1107,22 @@ export function createTelegramBot(): Bot {
         return;
       }
       const isLinkCommand = /^\/link(?:@[a-z0-9_]+)?(?:\s|$)/iu.test(ctx.message?.text ?? '');
-      await assertTelegramPrincipalAccess(telegramUserId, {
+      const principal = await assertTelegramPrincipalAccess(telegramUserId, {
         allowNew: true,
         allowUnlinkedForRelink: isLinkCommand,
       });
       await enforceCostProtection('telegram_update', `telegram:${telegramUserId}`);
-      if (ctx.chat?.type === 'private' && !isLinkCommand) {
-        await deliverFirstUsePrivacyNotice(telegramUserId, (message) => ctx.reply(message));
+      if (ctx.chat?.type === 'private' && !isLinkCommand
+        && ctx.callbackQuery?.data !== TELEGRAM_PRIVACY_CONTINUE_CALLBACK) {
+        await passTelegramPrivacyGate(telegramUserId, principal, async () => {
+          if (ctx.callbackQuery) {
+            try { await ctx.answerCallbackQuery(); } catch { /* callback may have expired */ }
+          }
+          await ctx.reply(telegramPrivacyNoticeText(), {
+            reply_markup: new InlineKeyboard().text('Pokračovať', TELEGRAM_PRIVACY_CONTINUE_CALLBACK),
+          });
+        }, next);
+        return;
       }
       return next();
     } catch (error) {
@@ -1160,6 +1169,23 @@ export function createTelegramBot(): Bot {
         error: safeErrorLog(error),
       });
       await ctx.reply('Párovací kód je neplatný alebo už vypršal. Vygenerujte nový kód vo webovom prehľade.');
+    }
+  });
+  bot.callbackQuery(TELEGRAM_PRIVACY_CONTINUE_CALLBACK, async (ctx) => {
+    if (ctx.chat?.type !== 'private' || !ctx.from) return;
+    try {
+      const telegramUserId = String(ctx.from.id);
+      const principal = await assertTelegramPrincipalAccess(telegramUserId);
+      const recorded = await acknowledgeTelegramPrivacyNotice(telegramUserId, principal);
+      try { await ctx.answerCallbackQuery({ text: recorded ? 'Asistent je pripravený.' : 'Už je pripravený.' }); } catch { /* callback may have expired */ }
+      if (recorded) await ctx.reply('Hotovo. Finančný asistent je pripravený. ✅ Správu, ktorú chceš zapísať, pošli teraz.');
+    } catch (error) {
+      if (error instanceof AccessRevokedError) {
+        await notifyAccessRevoked(ctx);
+        return;
+      }
+      console.error('Telegram privacy acknowledgement failed', { updateId: ctx.update.update_id, error: safeErrorLog(error) });
+      try { await ctx.answerCallbackQuery({ text: 'Skúste to, prosím, znova.', show_alert: true }); } catch { /* callback may have expired */ }
     }
   });
   bot.callbackQuery(/^claim:([0-9a-f-]{36})$/i, async (ctx) => {

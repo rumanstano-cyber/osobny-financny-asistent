@@ -54,6 +54,11 @@ jobs:
             psql -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -f - \
             < apps/api/scripts/privacy-db-bootstrap.sql >/dev/null
           for migration in supabase/migrations/*.sql; do
+            if [ "$(basename "$migration")" = '20261005133200_require_new_telegram_privacy_ack.sql' ]; then
+              docker exec "$POSTGRES_CONTAINER_ID" psql -v ON_ERROR_STOP=1 \
+                -U supabase_admin -d postgres \
+                -c "insert into public.ofa_users (id, display_name) values ('00000000-0000-4000-8000-00000000a099', 'Synthetic pre-migration account')" >/dev/null
+            fi
             echo "Applying $(basename "$migration")"
             docker exec -i "$POSTGRES_CONTAINER_ID" \
               psql -v ON_ERROR_STOP=1 -U supabase_admin -d postgres -f - < "$migration" >/dev/null
