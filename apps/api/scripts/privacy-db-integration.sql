@@ -3,11 +3,18 @@
 -- Disposable CI database only. All identities and records are synthetic.
 do $$
 begin
-  if has_table_privilege('authenticated', 'public.ofa_users', 'UPDATE')
-    or has_table_privilege('anon', 'public.ofa_users', 'UPDATE')
-    or has_table_privilege('authenticated', 'public.user_consents', 'INSERT')
-    or has_table_privilege('anon', 'public.user_consents', 'INSERT') then
-    raise exception 'Client role can bypass the Telegram acknowledgement gate';
+  if exists (
+    select 1 from pg_class
+    where oid in ('public.ofa_users'::regclass, 'public.user_consents'::regclass)
+      and not relrowsecurity
+  ) or exists (
+    select 1 from pg_policies
+    where schemaname = 'public'
+      and ((tablename = 'ofa_users' and cmd in ('UPDATE', 'ALL'))
+        or (tablename = 'user_consents' and cmd in ('INSERT', 'ALL')))
+      and roles && array['public', 'anon', 'authenticated']::name[]
+  ) then
+    raise exception 'Client role can bypass the Telegram acknowledgement gate through RLS';
   end if;
   if (select telegram_privacy_notice_required from public.ofa_users
       where id = '00000000-0000-4000-8000-00000000a099') is distinct from false then
