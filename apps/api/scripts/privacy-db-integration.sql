@@ -1,6 +1,55 @@
 \set ON_ERROR_STOP on
 
 -- Disposable CI database only. All identities and records are synthetic.
+do $$
+begin
+  if exists (
+    select 1 from pg_class
+    where oid in ('public.ofa_users'::regclass, 'public.user_consents'::regclass)
+      and not relrowsecurity
+  ) or exists (
+    select 1 from pg_policies
+    where schemaname = 'public'
+      and ((tablename = 'ofa_users' and cmd in ('UPDATE', 'ALL'))
+        or (tablename = 'user_consents' and cmd in ('INSERT', 'ALL')))
+      and roles && array['public', 'anon', 'authenticated']::name[]
+  ) then
+    raise exception 'Client role can bypass the Telegram acknowledgement gate through RLS';
+  end if;
+  if (select telegram_privacy_notice_required from public.ofa_users
+      where id = '00000000-0000-4000-8000-00000000a099') is distinct from false then
+    raise exception 'Pre-migration account was not exempted from the Telegram onboarding gate';
+  end if;
+end;
+$$;
+
+insert into public.ofa_users (id, display_name)
+values ('00000000-0000-4000-8000-00000000a098', 'Synthetic post-migration account');
+do $$
+declare
+  duplicate_blocked boolean := false;
+begin
+  if (select telegram_privacy_notice_required from public.ofa_users
+      where id = '00000000-0000-4000-8000-00000000a098') is distinct from true then
+    raise exception 'New account did not require Telegram privacy acknowledgement';
+  end if;
+  insert into public.user_consents (user_id, consent_type, policy_version, granted, evidence)
+  values ('00000000-0000-4000-8000-00000000a098', 'telegram_privacy_notice_ack',
+    '2026-09-draft-1', true, '{"channel":"telegram","action":"continue"}');
+  begin
+    insert into public.user_consents (user_id, consent_type, policy_version, granted)
+    values ('00000000-0000-4000-8000-00000000a098', 'telegram_privacy_notice_ack',
+      '2026-09-draft-1', true);
+  exception when unique_violation then duplicate_blocked := true;
+  end;
+  if not duplicate_blocked then raise exception 'Repeated Telegram acknowledgement was not unique'; end if;
+  if not exists (select 1 from public.user_consents where user_id = '00000000-0000-4000-8000-00000000a098'
+    and consent_type = 'telegram_privacy_notice_ack' and recorded_at is not null) then
+    raise exception 'Versioned Telegram acknowledgement was not recorded';
+  end if;
+end;
+$$;
+
 insert into public.ofa_users (id, display_name, email) values
   ('00000000-0000-4000-8000-00000000a001', 'Synthetic departing owner', 'privacy-a@example.invalid'),
   ('00000000-0000-4000-8000-00000000a002', 'Synthetic remaining member', 'privacy-b@example.invalid'),
