@@ -11,7 +11,7 @@ function normalize(value: string): string {
   return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 }
 
-const amountPattern = String.raw`(?:€\s*)?(\d{1,12}(?:[\s.,]\d{1,2})?)\s*(€|eur|kč|czk|\$|usd|£|gbp|huf|ft|pln)?`;
+const amountPattern = String.raw`(?:€\s*)?(\d{1,12}(?:[\s.,]\d{1,2})?)\s*(€|euro|eur|kč|czk|\$|usd|£|gbp|huf|ft|pln)?`;
 
 export type FinancialAmountMatch = { value: string; index: number; end: number };
 
@@ -75,7 +75,7 @@ export function parseFinancialMessage(text: string): ParsedTransaction | null {
     : { slug: 'ostatne', label: 'Ostatné' };
 
   const note = text
-    .replace(/(?:€\s*)?\d{1,12}(?:[\s.,]\d{1,2})?\s*(?:€|eur|kč|czk|\$|usd|£|gbp|huf|ft|pln)?/iu, '')
+    .replace(/(?:€\s*)?\d{1,12}(?:[\s.,]\d{1,2})?\s*(?:€|euro|eur|kč|czk|\$|usd|£|gbp|huf|ft|pln)?/iu, '')
     .trim();
 
   return {
