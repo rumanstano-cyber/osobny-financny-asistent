@@ -71,8 +71,8 @@ import {
 import { AccessRevokedError, assertTelegramPrincipalAccess } from './access-control.js';
 import { ReceiptPersistenceError } from './receipt-errors.js';
 import { safeErrorLog } from './safe-log.js';
-import { findPersonMatches, parseLoanIntent, type LoanIntent } from './loan-intents.js';
-import { decideLoanWrite, ensureTelegramLoanWorkspace, formatLoanAmount, formatLoanSnapshot, lastLoanMovement, LoanWriteConflict, loanSnapshot, recordLoanWrite, telegramLoanContext, voidLastLoan, type LoanContext } from './loan-service.js';
+import { findPersonMatches, loanClarification, parseLoanIntent, type LoanIntent } from './loan-intents.js';
+import { decideLoanWrite, ensureTelegramLoanWorkspace, formatLoanAmount, formatLoanSnapshot, lastLoanMovement, loanSavedText, LoanWriteConflict, loanSnapshot, recordLoanWrite, telegramLoanContext, voidLastLoan, type LoanContext } from './loan-service.js';
 import { acknowledgeTelegramPrivacyNotice, passTelegramPrivacyGate, TELEGRAM_PRIVACY_CONTINUE_CALLBACK, telegramPrivacyNoticeText } from './privacy-notice.js';
 
 type RpcResult = { transaction_id: string; workspace_id: string; was_duplicate: boolean };
@@ -438,6 +438,13 @@ async function clearPendingLoan(context: LoanContext): Promise<void> {
 async function handleLoanText(ctx: Context, text: string): Promise<boolean> {
   if (!ctx.from || !ctx.message || !ctx.chat) return false;
   const intent = parseLoanIntent(text);
+  if (!intent) {
+    const clarification = loanClarification(text);
+    if (clarification) {
+      await ctx.reply(clarification);
+      return true;
+    }
+  }
   if (!intent && !/^[\p{L}' -]{2,120}$/u.test(text.trim())) return false;
   let context = await telegramLoanContext(String(ctx.from.id));
   if (!context) {
@@ -525,16 +532,6 @@ async function handleLoanText(ctx: Context, text: string): Promise<boolean> {
   }
   if (saved) await ctx.reply(loanSavedText(intent, saved.counterparty_name, Number(saved.remaining_minor)));
   return true;
-}
-
-function loanSavedText(intent: Exclude<LoanIntent, null | { kind: 'status' }>, name: string, remainingMinor: number): string {
-  if (intent.kind === 'principal') return intent.direction === 'lent'
-    ? `Zapísané. ${name} ti dlhuje ${formatLoanAmount(remainingMinor, intent.currencyCode)}.`
-    : `Zapísané. Tvoj dlh: ${name} — ${formatLoanAmount(remainingMinor, intent.currencyCode)}.`;
-  if (remainingMinor === 0) return `Pôžička s ${name} je vyrovnaná. ✅`;
-  return intent.direction === 'lent'
-    ? `${name} vrátil ${formatLoanAmount(intent.amountMinor, intent.currencyCode)}. Zostáva ${formatLoanAmount(remainingMinor, intent.currencyCode)}.`
-    : `Vrátil si ${formatLoanAmount(intent.amountMinor, intent.currencyCode)} (${name}). Zostáva ${formatLoanAmount(remainingMinor, intent.currencyCode)}.`;
 }
 
 async function correctLastTransaction(telegramUserId: string, text: string, categorizationInput: Omit<CategorizationInput, 'telegramUserId'> = {}): Promise<CorrectedTransaction | null> {

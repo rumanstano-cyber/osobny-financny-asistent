@@ -1,4 +1,4 @@
-import { parseFinancialMessage } from './finance-parser.js';
+import { findFinancialAmounts, parseFinancialMessage } from './finance-parser.js';
 
 export type LoanDirection = 'lent' | 'borrowed';
 export type LoanIntent =
@@ -7,27 +7,37 @@ export type LoanIntent =
   | null;
 
 const person = String.raw`([\p{L}][\p{L}'-]*(?:\s+[\p{L}][\p{L}'-]*)?)`;
-const amount = String.raw`(?=\s*(?:\d|€))`;
+type NameCase = 'dative' | 'genitive' | null;
+type WritePattern = { kind: 'principal' | 'repayment'; direction: LoanDirection; nameCase: NameCase; expression: RegExp };
 
 function trimName(value: string | undefined): string | null {
   const name = value?.trim().replace(/[.,!?]+$/u, '').trim() ?? '';
-  return name.length >= 2 && name.length <= 120 ? name : null;
+  return name.length >= 2 && name.length <= 120 && !/^(?:mi|som|si|od|u|ešte)\s/iu.test(name) ? name : null;
 }
 
-function canonicalPerson(value: string | null, inflected: 'dative' | 'genitive' | null): string | null {
+export function nameKey(value: string): string {
+  return value.normalize('NFD').replace(/[\u0300-\u036f]/gu, '').toLocaleLowerCase('sk-SK').trim();
+}
+
+function canonicalPerson(value: string | null, inflected: NameCase): string | null {
   if (!value || !inflected) return value;
-  const replacements: Record<string, string> = { janovi: 'Jano', petrovi: 'Peter', martinovi: 'Martin' };
+  const dative: Record<string, string> = { janovi: 'Jano', petrovi: 'Peter', markovi: 'Marek', martinovi: 'Martin' };
+  const genitive: Record<string, string> = { jana: 'Jano', petra: 'Peter', marka: 'Marek', martina: 'Martin' };
   return value.split(' ').map((part) => {
     const key = nameKey(part);
-    if (replacements[key]) return replacements[key];
+    if (inflected === 'dative' && key === 'janovi' && part.toLocaleLowerCase('sk-SK').startsWith('ján')) return 'Ján';
+    if (inflected === 'genitive' && key === 'jana' && part.toLocaleLowerCase('sk-SK').startsWith('já')) return 'Ján';
+    const known = (inflected === 'dative' ? dative : genitive)[key];
+    if (known) return known;
     if (inflected === 'dative' && /ovi$/u.test(key)) return part.slice(0, -3);
     if (inflected === 'genitive' && /a$/u.test(key)) return part.slice(0, -1);
     return part;
   }).join(' ');
 }
 
-export function nameKey(value: string): string {
-  return value.normalize('NFD').replace(/[\u0300-\u036f]/gu, '').toLocaleLowerCase('sk-SK').trim();
+export function dativePerson(name: string): string {
+  const known: Record<string, string> = { Peter: 'Petrovi', Marek: 'Markovi', Martin: 'Martinovi', Ján: 'Jánovi', Jano: 'Janovi' };
+  return name.split(' ').map((part) => known[part] ?? (part.endsWith('o') ? `${part.slice(0, -1)}ovi` : `${part}ovi`)).join(' ');
 }
 
 export function findPersonMatches(name: string, people: readonly { id: string; name: string }[]): { id: string; name: string }[] {
@@ -57,6 +67,56 @@ function dueDate(text: string, now = new Date()): string | null {
   return date.toISOString().slice(0, 10);
 }
 
+function rule(kind: WritePattern['kind'], direction: LoanDirection, nameCase: NameCase, source: string): WritePattern {
+  return { kind, direction, nameCase, expression: new RegExp(`^${source}$`, 'iu') };
+}
+
+const writePatterns: WritePattern[] = [
+  rule('principal', 'borrowed', 'dative', String.raw`(?:som\s+)?dlžn[ýá]\s+${person}`),
+  rule('principal', 'borrowed', 'dative', String.raw`som\s+${person}\s+dlžn[ýá]`),
+  rule('principal', 'borrowed', 'dative', String.raw`${person}\s+som\s+dlžn[ýá]`),
+  rule('principal', 'borrowed', 'dative', String.raw`(?:ešte\s+)?dlžím\s+${person}`),
+  rule('principal', 'borrowed', 'dative', String.raw`${person}\s+(?:ešte\s+)?dlžím`),
+  rule('principal', 'borrowed', 'dative', String.raw`mám\s+dlh\s+voči\s+${person}`),
+  rule('principal', 'borrowed', 'genitive', String.raw`mám\s+u\s+${person}\s+dlh`),
+  rule('principal', 'borrowed', 'genitive', String.raw`požičal\s+som\s+si\s+od\s+${person}`),
+  rule('principal', 'borrowed', null, String.raw`${person}\s+mi\s+požičal`),
+  rule('principal', 'borrowed', 'genitive', String.raw`vzal\s+som\s+si\s+od\s+${person}`),
+  rule('principal', 'borrowed', 'genitive', String.raw`mám\s+od\s+${person}\s+požičaných`),
+  rule('principal', 'lent', 'dative', String.raw`požičal\s+som\s+${person}`),
+  rule('principal', 'lent', 'dative', String.raw`som\s+požičal\s+${person}`),
+  rule('principal', 'lent', 'dative', String.raw`dal\s+som\s+${person}\s+požičať`),
+  rule('principal', 'lent', 'dative', String.raw`${person}\s+som\s+požičal`),
+  rule('principal', 'lent', null, String.raw`${person}\s+mi\s+dlhuje`),
+  rule('principal', 'lent', null, String.raw`${person}\s+je\s+mi\s+dlžn[ýá]`),
+  rule('principal', 'lent', 'genitive', String.raw`mám\s+u\s+${person}`),
+  rule('principal', 'lent', null, String.raw`${person}\s+mi\s+má\s+vrátiť`),
+  rule('principal', 'lent', 'dative', String.raw`dal\s+som\s+${person}\s+na\s+pôžičku`),
+  rule('principal', 'lent', 'dative', String.raw`(?:pôžička|požička)\s+${person}`),
+  rule('repayment', 'borrowed', 'dative', String.raw`vrátil\s+som\s+(?:časť\s+dlhu\s+)?${person}`),
+  rule('repayment', 'borrowed', 'dative', String.raw`${person}\s+som\s+vrátil`),
+  rule('repayment', 'borrowed', 'dative', String.raw`(?:splácal|splatil|uhradil|vyrovnal)\s+som\s+${person}`),
+  rule('repayment', 'borrowed', 'dative', String.raw`dal\s+som\s+${person}\s+späť`),
+  rule('repayment', 'lent', null, String.raw`${person}\s+mi\s+vrátil(?:\s+(?:časť|pôžičku))?`),
+  rule('repayment', 'lent', null, String.raw`mi\s+${person}\s+vrátil`),
+  rule('repayment', 'lent', null, String.raw`${person}\s+vrátil`),
+  rule('repayment', 'lent', null, String.raw`${person}\s+mi\s+(?:splatil|uhradil)`),
+  rule('repayment', 'lent', null, String.raw`${person}\s+mi\s+dal\s+späť`),
+  rule('repayment', 'lent', 'genitive', String.raw`od\s+${person}\s+som\s+dostal\s+späť`),
+  rule('repayment', 'lent', null, String.raw`${person}\s+splatil\s+pôžičku`),
+];
+
+const loanWords = /(?:dlž|dlh|požič|pôžič|vrátil|vrátiť|splácal|splatil|uhradil|vyrovnal)/iu;
+const uncertainty = /\b(?:neviem|možno|asi|snáď|nič|nedlžím|nedlhuje|nepožičal|nevrátil)\b/iu;
+
+export function loanClarification(text: string): string | null {
+  if (!loanWords.test(text)) return null;
+  if (uncertainty.test(text)) return 'Z tejto správy neviem bezpečne zapísať pôžičku. Ak chceš zaznamenať pohyb, napíš komu, koľko a čo sa stalo.';
+  if (findFinancialAmounts(text).length === 0) return 'Akú sumu mám pri pôžičke zaznamenať?';
+  if (/^\s*(?:ešte\s+)?dlžím\s*(?:\d|€)/iu.test(text)) return 'Komu dlhuješ uvedenú sumu?';
+  return 'Pôžičku neviem jednoznačne rozpoznať. Napíš, prosím, kto komu dlhuje alebo kto komu vrátil peniaze.';
+}
+
 export function parseLoanIntent(text: string, now = new Date()): LoanIntent {
   const input = text.trim();
   const normalized = nameKey(input);
@@ -66,28 +126,31 @@ export function parseLoanIntent(text: string, now = new Date()): LoanIntent {
     const personName = /(?:dlhuje|dlhujem)\s+([\p{L}][\p{L}'-]*(?:\s+[\p{L}][\p{L}'-]*)?)(?:\?|\.)?$/iu.exec(input)?.[1];
     return { kind: 'status', direction, name: canonicalPerson(trimName(personName), direction === 'borrowed' ? 'dative' : null) };
   }
-  const patterns: { kind: 'principal' | 'repayment'; direction: LoanDirection; expression: RegExp }[] = [
-    { kind: 'principal', direction: 'borrowed', expression: new RegExp(String.raw`^požičal\s+som\s+si\s+od\s+${person}${amount}`, 'iu') },
-    { kind: 'principal', direction: 'lent', expression: new RegExp(String.raw`^požičal\s+som\s+${person}${amount}`, 'iu') },
-    { kind: 'principal', direction: 'lent', expression: /^požičal\s+som\s*(?=\d|€)/iu },
-    { kind: 'repayment', direction: 'lent', expression: new RegExp(String.raw`^${person}\s+mi\s+vrátil(?:a)?(?:\s+pôžičku)?${amount}`, 'iu') },
-    { kind: 'repayment', direction: 'borrowed', expression: new RegExp(String.raw`^${person}(?:ovi|ovi\s+som)?\s+som\s+vrátil(?:a)?${amount}`, 'iu') },
-    { kind: 'repayment', direction: 'borrowed', expression: new RegExp(String.raw`^${person}\s+som\s+vrátil(?:a)?${amount}`, 'iu') },
-  ];
-  // Slovak dative suffixes are removed only from a single first name.
-  const borrowedRepayment = /^([\p{L}]+)ovi\s+som\s+vrátil(?:a)?\s+(?=\d|€)/iu.exec(input);
-  let detected: { kind: 'principal' | 'repayment'; direction: LoanDirection; name: string | null } | null = borrowedRepayment
-    ? { kind: 'repayment', direction: 'borrowed', name: canonicalPerson(borrowedRepayment[1], 'dative') } : null;
-  if (!detected) for (const pattern of patterns) {
-    const match = pattern.expression.exec(input);
-    if (match) {
-      const inflection = pattern.kind === 'principal' ? (pattern.direction === 'lent' ? 'dative' : 'genitive') : null;
-      detected = { kind: pattern.kind, direction: pattern.direction, name: canonicalPerson(trimName(match[1]), inflection) };
-      break;
-    }
-  }
-  if (!detected) return null;
+  if (uncertainty.test(input)) return null;
+  const amountMatches = findFinancialAmounts(input);
+  if (amountMatches.length === 0) return null;
+  const amountMatch = amountMatches[0];
+  const head = input.slice(0, amountMatch.index) + input.slice(amountMatch.end);
+  const [statement, ...tail] = head.split(/[,;]/u);
+  if (tail.length && (!dueDate(input, now) || !/^\s*má\s+mi\s+ich\s+vrátiť\s+do\s+/iu.test(tail.join(',')))) return null;
+  if (findFinancialAmounts(statement).length > 0) return null;
+  const phrase = statement.trim().replace(/[.!?]+$/u, '').trim();
   const parsed = parseFinancialMessage(input);
   if (!parsed) return null;
-  return { ...detected, amountMinor: parsed.amountMinor, currencyCode: parsed.currencyCode, dueOn: detected.kind === 'principal' ? dueDate(input, now) : null };
+  for (const pattern of writePatterns) {
+    const match = pattern.expression.exec(phrase);
+    if (!match) continue;
+    const parsedName = trimName(match[1]);
+    if (!parsedName) continue;
+    return {
+      kind: pattern.kind, direction: pattern.direction,
+      name: canonicalPerson(parsedName, pattern.nameCase),
+      amountMinor: parsed.amountMinor, currencyCode: parsed.currencyCode,
+      dueOn: pattern.kind === 'principal' ? dueDate(input, now) : null,
+    };
+  }
+  if (/^požičal\s+som$/iu.test(phrase)) {
+    return { kind: 'principal', direction: 'lent', name: null, amountMinor: parsed.amountMinor, currencyCode: parsed.currencyCode, dueOn: dueDate(input, now) };
+  }
+  return null;
 }

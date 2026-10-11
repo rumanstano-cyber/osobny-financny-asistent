@@ -1,6 +1,6 @@
 import { supabase } from './supabase.js';
 import { assertActiveUserWorkspaceAccess } from './access-control.js';
-import { findPersonMatches, type LoanDirection, type LoanIntent } from './loan-intents.js';
+import { dativePerson, findPersonMatches, type LoanDirection, type LoanIntent } from './loan-intents.js';
 import { formatAmount, type ParsedTransaction } from './finance-parser.js';
 
 type Currency = ParsedTransaction['currencyCode'];
@@ -102,6 +102,19 @@ export function formatLoanSnapshot(snapshot: LoanSnapshot, direction: LoanDirect
 
 export function formatLoanAmount(amountMinor: number, currencyCode: string): string {
   return formatAmount(amountMinor, currencyCode as Currency);
+}
+
+export function loanSavedText(intent: Exclude<LoanIntent, null | { kind: 'status' }>, name: string, remainingMinor: number): string {
+  const dative = dativePerson(name);
+  if (intent.kind === 'principal') return intent.direction === 'lent'
+    ? `Zapísané. ${name} ti dlhuje ${formatLoanAmount(remainingMinor, intent.currencyCode)}.`
+    : `Zapísané. ${dative} dlhuješ ${formatLoanAmount(remainingMinor, intent.currencyCode)}.`;
+  if (remainingMinor === 0) return intent.direction === 'lent'
+    ? `Pôžička je vyrovnaná. ${name} ti už nič nedlhuje. ✅`
+    : `Dlh voči ${dative} je vyrovnaný. ✅`;
+  return intent.direction === 'lent'
+    ? `${name} vrátil ${formatLoanAmount(intent.amountMinor, intent.currencyCode)}. Zostáva ${formatLoanAmount(remainingMinor, intent.currencyCode)}.`
+    : `${dative} si vrátil ${formatLoanAmount(intent.amountMinor, intent.currencyCode)}. Zostáva ${formatLoanAmount(remainingMinor, intent.currencyCode)}.`;
 }
 
 export async function decideLoanWrite(context: LoanContext, intent: Exclude<LoanIntent, null | { kind: 'status' }>): Promise<LoanDecision> {
