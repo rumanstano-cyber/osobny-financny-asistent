@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { dativePerson, findPersonMatches, loanClarification, parseLoanIntent } from './loan-intents.js';
 
@@ -8,6 +9,10 @@ process.env.SUPABASE_SERVICE_ROLE_KEY ??= 'test-service-role';
 process.env.INTERNAL_CRON_SECRET ??= 'test-internal-cron-secret-32-chars';
 
 const { loanSavedText } = await import('./loan-service.js');
+const loanMigration = readFileSync(
+  new URL('../../../supabase/migrations/20261001193000_add_personal_loans.sql', import.meta.url),
+  'utf8',
+);
 
 const borrowed = [
   'Som dlžný Romanovi 12 €.', 'Dlžím Romanovi 12 €.', 'Romanovi dlžím 12 €.',
@@ -93,6 +98,18 @@ test('partial and full settlements name the right debtor', () => {
   assert.equal(loanSavedText(borrowedIntent, 'Roman', 700), 'Romanovi si vrátil 5,00 €. Zostáva 7,00 €.');
   assert.match(loanSavedText(lentIntent, 'Roman', 0), /Roman ti už nič nedlhuje/u);
   assert.equal(loanSavedText(borrowedIntent, 'Roman', 0), 'Dlh voči Romanovi je vyrovnaný. ✅');
+});
+
+test('repayment stays bounded by the open balance before a movement is recorded', () => {
+  assert.match(loanMigration, /if p_amount_minor > v_total then raise exception 'Repayment exceeds open balance' using errcode = '22003'/u);
+  assert.match(loanMigration, /v_to_apply := least\(v_remaining, v_available\)/u);
+  assert.match(loanMigration, /status = case when repaid_minor \+ v_to_apply = original_minor then 'SETTLED'/u);
+});
+
+test('a repeated Telegram update returns the existing loan movement', () => {
+  assert.match(loanMigration, /telegram_update_id text not null unique/u);
+  assert.match(loanMigration, /where m.telegram_update_id = p_update_id and m.created_by_user_id = v_user_id/u);
+  assert.match(loanMigration, /if found then[\s\S]*?was_duplicate := true;[\s\S]*?return next;[\s\S]*?return;/u);
 });
 
 test('uncertain, negated and incomplete loan statements cannot fall through to expense parsing', () => {
