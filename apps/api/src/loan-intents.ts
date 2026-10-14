@@ -93,20 +93,21 @@ const writePatterns: WritePattern[] = [
   rule('principal', 'lent', null, String.raw`${person}\s+mi\s+má\s+vrátiť`),
   rule('principal', 'lent', 'dative', String.raw`dal\s+som\s+${person}\s+na\s+pôžičku`),
   rule('principal', 'lent', 'dative', String.raw`(?:pôžička|požička)\s+${person}`),
-  rule('repayment', 'borrowed', 'dative', String.raw`vrátil\s+som\s+(?:časť\s+dlhu\s+)?${person}`),
-  rule('repayment', 'borrowed', 'dative', String.raw`${person}\s+som\s+vrátil`),
-  rule('repayment', 'borrowed', 'dative', String.raw`(?:splácal|splatil|uhradil|vyrovnal)\s+som\s+${person}`),
+  rule('repayment', 'borrowed', 'dative', String.raw`vr[áa]til\s+som\s+(?:časť\s+dlhu\s+)?${person}`),
+  rule('repayment', 'borrowed', 'dative', String.raw`${person}\s+som\s+vr[áa]til`),
+  rule('repayment', 'borrowed', 'dative', String.raw`(?:spl[áa]cal|splatil|uhradil|vyrovnal)\s+som\s+([\p{L}][\p{L}'-]*)\s+(?:pôžičku|pozicku)`),
+  rule('repayment', 'borrowed', 'dative', String.raw`(?:spl[áa]cal|splatil|uhradil|vyrovnal)\s+som\s+${person}`),
   rule('repayment', 'borrowed', 'dative', String.raw`dal\s+som\s+${person}\s+späť`),
-  rule('repayment', 'lent', null, String.raw`${person}\s+mi\s+vrátil(?:\s+(?:časť|pôžičku))?`),
-  rule('repayment', 'lent', null, String.raw`mi\s+${person}\s+vrátil`),
-  rule('repayment', 'lent', null, String.raw`${person}\s+vrátil`),
+  rule('repayment', 'lent', null, String.raw`${person}\s+mi\s+vr[áa]til(?:\s+(?:časť|pôžičku))?`),
+  rule('repayment', 'lent', null, String.raw`mi\s+${person}\s+vr[áa]til`),
+  rule('repayment', 'lent', null, String.raw`${person}\s+vr[áa]til`),
   rule('repayment', 'lent', null, String.raw`${person}\s+mi\s+(?:splatil|uhradil)`),
   rule('repayment', 'lent', null, String.raw`${person}\s+mi\s+dal\s+späť`),
   rule('repayment', 'lent', 'genitive', String.raw`od\s+${person}\s+som\s+dostal\s+späť`),
   rule('repayment', 'lent', null, String.raw`${person}\s+splatil\s+pôžičku`),
 ];
 
-const loanWords = /(?:dlž|dlh|požič|pôžič|vrátil|vrátiť|splácal|splatil|uhradil|vyrovnal)/iu;
+const loanWords = /(?:dlž|dlh|požič|pôžič|pozick|vr[áa]til|vr[áa]ti[ťt]|spl[áa]cal|splatil|uhradil|vyrovnal)/iu;
 const uncertainty = /\b(?:neviem|možno|asi|snáď|nič|nedlžím|nedlhuje|nepožičal|nevrátil)\b/iu;
 
 export function loanClarification(text: string): string | null {

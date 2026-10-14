@@ -12,6 +12,7 @@ export type LoanSnapshot = { entries: LoanEntry[] };
 export type LoanDecision = { kind: 'ready'; counterpartyId: string | null; name: string | null }
   | { kind: 'missing_name' }
   | { kind: 'missing_loan' }
+  | { kind: 'ambiguous_loans' }
   | { kind: 'ambiguous'; candidates: Counterparty[] }
   | { kind: 'overpayment'; balanceMinor: number };
 
@@ -119,16 +120,22 @@ export function loanSavedText(intent: Exclude<LoanIntent, null | { kind: 'status
 
 export async function decideLoanWrite(context: LoanContext, intent: Exclude<LoanIntent, null | { kind: 'status' }>): Promise<LoanDecision> {
   await assertActiveUserWorkspaceAccess(context.userId, context.workspaceId);
-  if (!intent.name) return { kind: 'missing_name' };
   const { people, loans } = await openLoanRows(context.workspaceId);
+  return decideLoanWriteFromRows(intent, people, loans);
+}
+
+export function decideLoanWriteFromRows(intent: Exclude<LoanIntent, null | { kind: 'status' }>, people: Counterparty[], loans: LoanRow[]): LoanDecision {
+  if (!intent.name) return { kind: 'missing_name' };
   const relevant = people.filter((person) => loans.some((loan) => loan.counterparty_id === person.id
     && loan.direction === intent.direction && loan.currency_code === intent.currencyCode));
   const matches = findPersonMatches(intent.name, intent.kind === 'repayment' ? relevant : people);
   if (matches.length > 1) return { kind: 'ambiguous', candidates: matches };
   if (intent.kind === 'principal') return { kind: 'ready', counterpartyId: matches[0]?.id ?? null, name: matches[0] ? null : intent.name };
   if (matches.length === 0) return { kind: 'missing_loan' };
-  const balanceMinor = loans.filter((loan) => loan.counterparty_id === matches[0].id
-    && loan.direction === intent.direction && loan.currency_code === intent.currencyCode)
+  const matchingLoans = loans.filter((loan) => loan.counterparty_id === matches[0].id
+    && loan.direction === intent.direction && loan.currency_code === intent.currencyCode);
+  if (matchingLoans.length > 1) return { kind: 'ambiguous_loans' };
+  const balanceMinor = matchingLoans
     .reduce((sum, loan) => sum + Number(loan.original_minor) - Number(loan.repaid_minor), 0);
   if (intent.amountMinor > balanceMinor) return { kind: 'overpayment', balanceMinor };
   return { kind: 'ready', counterpartyId: matches[0].id, name: null };
