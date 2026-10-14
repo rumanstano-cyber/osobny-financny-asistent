@@ -517,6 +517,10 @@ async function handleLoanText(ctx: Context, text: string): Promise<boolean> {
     await ctx.reply('Pre túto osobu nemáš evidovaný otvorený dlh v uvedenej mene. Skontroluj meno a sumu.');
     return true;
   }
+  if (decision.kind === 'ambiguous_loans') {
+    await ctx.reply('Pre túto osobu máš viac otvorených pôžičiek. Nič som nezapísal. Upresni, prosím, ktorú pôžičku splácaš; ak ich nevieš rozlíšiť, kontaktuj podporu.');
+    return true;
+  }
   if (decision.kind === 'overpayment') {
     await ctx.reply(`Evidovaný dlh je iba ${formatLoanAmount(decision.balanceMinor ?? 0, intent.currencyCode)}. Zápis som nevykonal. Napíš správnu sumu alebo vysvetli rozdiel.`);
     return true;

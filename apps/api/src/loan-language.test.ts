@@ -2,13 +2,14 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { dativePerson, findPersonMatches, loanClarification, parseLoanIntent } from './loan-intents.js';
+import { parseFinancialMessage } from './finance-parser.js';
 
 process.env.TELEGRAM_BOT_TOKEN ??= 'test-token';
 process.env.SUPABASE_URL ??= 'https://example.supabase.co';
 process.env.SUPABASE_SERVICE_ROLE_KEY ??= 'test-service-role';
 process.env.INTERNAL_CRON_SECRET ??= 'test-internal-cron-secret-32-chars';
 
-const { loanSavedText } = await import('./loan-service.js');
+const { decideLoanWriteFromRows, loanSavedText } = await import('./loan-service.js');
 const loanMigration = readFileSync(
   new URL('../../../supabase/migrations/20261001193000_add_personal_loans.sql', import.meta.url),
   'utf8',
@@ -67,6 +68,38 @@ test('original Roman bug never becomes an ordinary expense or an Ostatné respon
   const reply = loanSavedText(intent, 'Roman', 1200);
   assert.equal(reply, 'Zapísané. Romanovi dlhuješ 12,00 €.');
   assert.doesNotMatch(reply, /ostatné\s+12\s+eur/iu);
+});
+
+test('Martin repayments keep the direction and do not reach the expense route', () => {
+  for (const [sentence, direction] of [
+    ['Vrátil som Martinovi 10 eur', 'borrowed'],
+    ['vratil som Martinovi 10 eur', 'borrowed'],
+    ['Martinovi som vrátil 10 €', 'borrowed'],
+    ['Martinovi som vratil 10 €', 'borrowed'],
+    ['Splácal som Martinovi pôžičku 10 eur', 'borrowed'],
+    ['Martin mi vrátil 10 eur', 'lent'],
+    ['Martin mi vratil 10 eur', 'lent'],
+  ] as const) {
+    assert.deepEqual(parseLoanIntent(sentence), {
+      kind: 'repayment', direction, name: 'Martin', amountMinor: 1000,
+      currencyCode: 'EUR', dueOn: null,
+    }, sentence);
+  }
+  assert.equal(parseLoanIntent('Káva 10 €'), null);
+  assert.equal(parseFinancialMessage('Káva 10 €')?.transactionType, 'expense');
+  assert.ok(loanClarification('vratil som 10 eur'));
+});
+
+test('repayment decision refuses absent or multiple open Martin debts', () => {
+  const intent = parseLoanIntent('vratil som Martinovi 10 eur');
+  if (!intent || intent.kind !== 'repayment') throw new Error('Expected repayment');
+  const people = [{ id: 'martin', name: 'Martin' }];
+  const loan = { id: 'a', counterparty_id: 'martin', direction: 'borrowed' as const,
+    original_minor: 30000, repaid_minor: 0, currency_code: 'EUR', due_on: null, status: 'OPEN' };
+  assert.deepEqual(decideLoanWriteFromRows(intent, [], []), { kind: 'missing_loan' });
+  assert.deepEqual(decideLoanWriteFromRows(intent, people, [loan, { ...loan, id: 'b' }]), { kind: 'ambiguous_loans' });
+  assert.deepEqual(decideLoanWriteFromRows(intent, people, [loan]), { kind: 'ready', counterpartyId: 'martin', name: null });
+  assert.deepEqual(decideLoanWriteFromRows({ ...intent, direction: 'lent' }, people, [loan]), { kind: 'missing_loan' });
 });
 
 test('loan amounts accept euro spellings and both decimal separators', () => {

@@ -80,6 +80,7 @@ declare
   created_workspace uuid;
   martin_id uuid;
   result record;
+  failed boolean;
 begin
   created_workspace := public.ensure_telegram_loan_workspace('333333333', 'Synthetic newcomer', 'EUR');
   if created_workspace is null or created_workspace <> public.ensure_telegram_loan_workspace('333333333', 'Synthetic newcomer', 'EUR') then
@@ -92,9 +93,47 @@ begin
     '333333333','333333333','1','2001','Martin',null,'borrowed','principal',30000,'EUR');
   if result.remaining_minor <> 30000 then raise exception 'Borrowed loan missing'; end if;
   select id into martin_id from public.loan_counterparties where workspace_id = created_workspace and name = 'Martin';
+  failed := false;
+  begin
+    perform public.record_telegram_loan_movement(
+      '333333333','333333333','3','2003',null,martin_id,'lent','repayment',10000,'EUR');
+  exception when no_data_found then failed := true;
+  end;
+  if not failed or (select count(*) from public.financial_transactions where workspace_id = created_workspace) <> 1 then
+    raise exception 'Missing Martin debt created a transaction';
+  end if;
   select * into result from public.record_telegram_loan_movement(
     '333333333','333333333','2','2002',null,martin_id,'borrowed','repayment',10000,'EUR');
   if result.remaining_minor <> 20000 then raise exception 'Borrowed repayment missing'; end if;
+  if (select count(*) from public.loan_movements where workspace_id = created_workspace
+      and counterparty_id = martin_id and kind = 'repayment' and direction = 'borrowed'
+      and amount_minor = 10000 and voided_at is null) <> 1 then
+    raise exception 'Martin repayment was not stored exactly once';
+  end if;
+  if not exists (select 1 from public.personal_loans where workspace_id = created_workspace
+      and counterparty_id = martin_id and direction = 'borrowed' and original_minor = 30000
+      and repaid_minor = 10000 and status = 'OPEN') then
+    raise exception 'Martin loan balance was not persisted';
+  end if;
+  if not exists (select 1 from public.financial_transactions t join public.loan_movements m
+      on m.transaction_id = t.id where m.workspace_id = created_workspace
+      and m.telegram_update_id = '2002' and t.transaction_type = 'transfer'
+      and t.amount_minor = 10000) then
+    raise exception 'Martin repayment lacks its transfer transaction';
+  end if;
+  if exists (select 1 from public.financial_transactions where workspace_id = created_workspace
+      and transaction_type = 'expense' and amount_minor = 10000) then
+    raise exception 'Martin repayment duplicated an ordinary expense';
+  end if;
+  if not exists (select 1 from public.audit_events where workspace_id = created_workspace
+      and action = 'loan.movement_recorded' and entity_id = result.movement_id) then
+    raise exception 'Martin repayment lacks its audit event';
+  end if;
+  select * into result from public.record_telegram_loan_movement(
+    '333333333','333333333','2','2002',null,martin_id,'borrowed','repayment',10000,'EUR');
+  if not result.was_duplicate or result.remaining_minor <> 20000 then
+    raise exception 'Martin repayment replay changed the balance';
+  end if;
 end;
 $$;
 
