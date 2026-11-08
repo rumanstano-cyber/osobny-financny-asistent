@@ -1,6 +1,7 @@
 import jsQRImport, { type Options, type QRCode } from 'jsqr';
 import { Jimp } from 'jimp';
 import { safeErrorLog } from './safe-log.js';
+import { InvalidReceiptExtractionError } from './ai.js';
 
 // jsQR publishes CommonJS runtime code with an ESM-incompatible declaration
 // under NodeNext. Keep the runtime import and make its callable contract explicit.
@@ -80,17 +81,21 @@ function receiptTotalMinor(receipt: unknown): number | null {
   // (including VAT). Older responses expose the same receipt total as
   // `totalPrice`. Do not inspect nested `payments`: tendered cash can be
   // greater than the amount due when change was issued.
+  const totals = [] as number[];
   for (const [key, value] of [
     ['totalamount', receipt.totalAmount],
     ['totalprice', receipt.totalPrice],
   ] as const) {
     const amount = parseAmountMinor(value, key);
-    if (amount !== null) return amount;
+    if (amount !== null) totals.push(amount);
   }
-  return null;
+  if (totals.length > 1 && totals.some((amount) => amount !== totals[0])) {
+    throw new InvalidReceiptExtractionError('Conflicting eKasa receipt totals');
+  }
+  return totals[0] ?? null;
 }
 
-function extractReceipt(value: unknown, rawPayload: string): EkasaReceipt | null {
+export function extractEkasaReceiptResponse(value: unknown, rawPayload: string, offlinePayload: JsonRecord | null = null): EkasaReceipt | null {
   const receipt = isRecord(value) && isRecord(value.receipt) ? value.receipt : value;
   const organization = isRecord(receipt) && isRecord(receipt.organization) ? receipt.organization : null;
   const merchantName = textValue(
@@ -103,6 +108,10 @@ function extractReceipt(value: unknown, rawPayload: string): EkasaReceipt | null
   );
   const receiptDate = parseDate(findValue(receipt, ['receiptdate', 'issuedat', 'issueddate', 'date', 'createdat']));
   const amountMinor = receiptTotalMinor(receipt);
+  const qrAmount = offlinePayload ? parseAmountMinor(offlinePayload.totalAmount, 'totalamount') : null;
+  if (qrAmount !== null && amountMinor !== null && qrAmount !== amountMinor) {
+    throw new InvalidReceiptExtractionError('eKasa API total differs from offline QR total');
+  }
 
   // Do not guess from incomplete QR data. Vision remains the fallback unless
   // eKasa supplied the three values needed for a reliable financial record.
@@ -185,14 +194,15 @@ export async function readEkasaReceiptQr(image: Buffer): Promise<EkasaReceipt | 
   if (!payload) return null;
 
   try {
-    const inlinePayload = payload.startsWith('{') ? JSON.parse(payload) : null;
-    if (inlinePayload) return extractReceipt(inlinePayload, payload);
+    // Unauthenticated arbitrary JSON QR codes are not fiscal evidence.
+    if (payload.startsWith('{')) return null;
 
     const offlinePayload = offlineEkasaPayload(payload);
     if (!isEkasaReceiptId(payload) && !offlinePayload && !isEkasaUrl(payload)) return null;
     const receipt = await fetchEkasaReceipt(payload, offlinePayload);
-    return receipt ? extractReceipt(receipt, payload) : null;
+    return receipt ? extractEkasaReceiptResponse(receipt, payload, offlinePayload) : null;
   } catch (error) {
+    if (error instanceof InvalidReceiptExtractionError) throw error;
     console.warn('eKasa QR parsing failed', { error: safeErrorLog(error) });
     return null;
   }

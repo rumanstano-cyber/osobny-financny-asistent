@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { Bot, InlineKeyboard, InputFile, type Context } from 'grammy';
-import { describeReceiptOcrFailure, extractReceipt, resolveCategoryCorrectionWithAi, transcribeVoice, type ReceiptExtraction } from './ai.js';
+import { describeReceiptOcrFailure, extractReceipt, InvalidReceiptExtractionError, resolveCategoryCorrectionWithAi, transcribeVoice, type ReceiptExtraction } from './ai.js';
 import {
   categoryButtonRows,
   categoryCallbackData,
@@ -70,6 +70,7 @@ import {
 } from './telegram-media-limits.js';
 import { AccessRevokedError, assertTelegramPrincipalAccess } from './access-control.js';
 import { ReceiptPersistenceError } from './receipt-errors.js';
+import { receiptCategorySignals, receiptTransaction, verifiedReceiptAmount } from './receipt-financial.js';
 import { safeErrorLog } from './safe-log.js';
 import { findPersonMatches, loanClarification, parseLoanIntent, type LoanIntent } from './loan-intents.js';
 import { decideLoanWrite, ensureTelegramLoanWorkspace, formatLoanAmount, formatLoanSnapshot, lastLoanMovement, loanSavedText, LoanWriteConflict, loanSnapshot, recordLoanWrite, telegramLoanContext, voidLastLoan, type LoanContext } from './loan-service.js';
@@ -780,12 +781,10 @@ function claimUpdate(updateId: number): boolean {
   return true;
 }
 
-async function saveTransaction(ctx: Context, text: string, categorizationInput: Omit<CategorizationInput, 'telegramUserId'> = {}): Promise<{ result: RpcResult; slug: string; label: string; amount: number; currency: 'EUR' | 'CZK' | 'USD' | 'GBP' | 'HUF' | 'PLN' } | null> {
+async function saveParsedTransaction(ctx: Context, text: string, parsed: ParsedTransaction, categorizationInput: Omit<CategorizationInput, 'telegramUserId'> = {}): Promise<{ result: RpcResult; slug: string; label: string; amount: number; currency: 'EUR' | 'CZK' | 'USD' | 'GBP' | 'HUF' | 'PLN' } | null> {
   if (!ctx.from || !ctx.message || !ctx.chat) return null;
   const telegramUserId = String(ctx.from.id);
   await assertTelegramPrincipalAccess(telegramUserId, { allowNew: true });
-  const parsed = parseFinancialMessage(text);
-  if (!parsed) return null;
   const category = parsed.transactionType === 'expense'
     ? await categorizeExpense({ telegramUserId, messageText: text, ...categorizationInput })
     : { slug: parsed.categorySlug, label: parsed.categoryLabel };
@@ -796,6 +795,11 @@ async function saveTransaction(ctx: Context, text: string, categorizationInput: 
   if (error) throw new Error(error.message);
   const result = (data as RpcResult[] | null)?.[0];
   return result ? { result, slug: category.slug, label: category.label, amount: parsed.amountMinor, currency: parsed.currencyCode } : null;
+}
+
+async function saveTransaction(ctx: Context, text: string, categorizationInput: Omit<CategorizationInput, 'telegramUserId'> = {}) {
+  const parsed = parseFinancialMessage(text);
+  return parsed ? saveParsedTransaction(ctx, text, parsed, categorizationInput) : null;
 }
 
 async function saveTransactionBatch(
@@ -921,17 +925,26 @@ async function handleReceipt(ctx: Context): Promise<void> {
       extraction = await extractReceipt(receiptImage.bytes, 'image/jpeg', `telegram:${ctx.from.id}`);
     }
 
-    if (!extraction.amountMinor) {
-      throw new InvalidReceiptImageError('Receipt total could not be extracted reliably');
-    }
+    const verifiedAmount = verifiedReceiptAmount(extraction, ekasa ? 'ekasa' : 'vision');
     stage = 'uloženie finančnej transakcie';
-    const synthetic = `${extraction.merchantName ?? 'Bloček'} ${formatAmount(extraction.amountMinor, 'EUR')}`;
-    const saved = await saveTransaction(ctx, synthetic, { merchantName: extraction.merchantName, receiptText: extraction.ocrText });
+    const signals = receiptCategorySignals(extraction);
+    const saved = await saveParsedTransaction(
+      ctx,
+      `receipt:${ctx.update.update_id}`,
+      receiptTransaction(extraction, verifiedAmount),
+      signals.itemText ? { messageText: signals.itemText } : { merchantName: signals.merchantName, allowAiFallback: false },
+    );
     if (!saved) throw new Error('Receipt transaction was not created');
     await assertTelegramPrincipalAccess(String(ctx.from.id), { workspaceId: saved.result.workspace_id });
     stage = 'načítanie uloženej transakcie';
-    const { data: transaction, error: transactionError } = await supabase.from('financial_transactions').select('created_by_user_id').eq('id', saved.result.transaction_id).single();
+    const { data: transaction, error: transactionError } = await supabase.from('financial_transactions')
+      .select('created_by_user_id, amount_minor, currency_code, transaction_type, status')
+      .eq('id', saved.result.transaction_id).single();
     if (transactionError || !transaction) throw new Error(transactionError?.message ?? 'Transaction lookup failed');
+    if (transaction.amount_minor !== verifiedAmount || transaction.currency_code !== 'EUR'
+      || transaction.transaction_type !== 'expense' || transaction.status !== 'confirmed') {
+      throw new InvalidReceiptExtractionError('Stored transaction does not match the verified receipt total');
+    }
     stage = 'presun fotky do trvalého úložiska';
     const key = `${saved.result.workspace_id}/${ctx.update.update_id}-${hash.slice(0, 16)}.jpg`;
     permanentKey = key;
@@ -960,7 +973,7 @@ async function handleReceipt(ctx: Context): Promise<void> {
       p_sha256_hex: hash,
       p_merchant_name: extraction.merchantName,
       p_receipt_date: extraction.receiptDate,
-      p_total_amount_minor: extraction.amountMinor,
+      p_total_amount_minor: verifiedAmount,
       p_currency_code: 'EUR',
       p_ocr_text: extraction.ocrText,
       p_ocr_language: 'sk',
@@ -978,7 +991,7 @@ async function handleReceipt(ctx: Context): Promise<void> {
     const receipt = (finalizedRows as Array<{ receipt_id: string; was_duplicate: boolean }> | null)?.[0];
     if (!receipt) throw new Error('Receipt finalization returned no result');
     if (receipt.was_duplicate) return;
-    await ctx.reply(`${ekasa ? '✅ Zapísané z eKasa QR' : '✅ Zapísané z bločku'}: ${extraction.merchantName ?? 'Výdavok'} – ${formatAmount(extraction.amountMinor, 'EUR')}`);
+    await ctx.reply(`${ekasa ? '✅ Zapísané z eKasa QR' : '✅ Zapísané z bločku'}: ${signals.merchantName ?? 'Výdavok'} – ${formatAmount(verifiedAmount, 'EUR')}`);
     const keyboard = new InlineKeyboard()
       .text('✅ ÁNO', receiptPurchaseProtectionCallbackData(receipt.receipt_id, true))
       .text('❌ NIE', receiptPurchaseProtectionCallbackData(receipt.receipt_id, false));
@@ -1086,6 +1099,8 @@ export async function notifyQueuedTelegramMediaFailure(bot: Bot, payload: Telegr
     ? 'Spracovanie bločkov je dočasne vyťažené. Skúste to, prosím, neskôr.'
     : error instanceof InvalidReceiptImageError
     ? 'Fotografiu sa nepodarilo bezpečne prečítať. Pošlite, prosím, úplnú a ostrú fotografiu vo formáte JPG alebo PNG.'
+    : error instanceof InvalidReceiptExtractionError
+    ? 'Celkovú sumu bločku sa nepodarilo jednoznačne overiť. Pred opakovaním skontrolujte posledný zápis a pošlite úplnú, čitateľnejšiu fotografiu.'
     : error instanceof TelegramFileDownloadError && !error.retryable
     ? 'Fotografia je neplatná alebo príliš veľká. Pošlite, prosím, obrázok do 10 MB.'
     : describeReceiptOcrFailure(error).code !== 'provider'
