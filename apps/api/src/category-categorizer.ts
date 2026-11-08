@@ -15,7 +15,7 @@ export type ExpenseCategorization = {
   reason: string;
 };
 
-export type CategorizationInput = { telegramUserId: string; messageText?: string; merchantName?: string | null; receiptText?: string | null };
+export type CategorizationInput = { telegramUserId: string; messageText?: string; merchantName?: string | null; receiptText?: string | null; allowAiFallback?: boolean };
 const cacheTtlMs = 5 * 60_000;
 let cachedRules: { expiresAt: number; rules: CategoryRule[] } | null = null;
 const categoryCache = new Map<string, { expiresAt: number; categories: ActiveCategory[] }>();
@@ -80,6 +80,11 @@ export async function categorizeExpense(input: CategorizationInput): Promise<Exp
   if (match?.category && matchedCategory) {
     return { slug: matchedCategory.slug, label: matchedCategory.name, source: 'rule', confidence: 1, reason: `Matched ${match.rule.match_type} rule: ${match.rule.keyword}` };
   }
+
+  // A merchant name alone does not establish what was bought. For QR-only
+  // receipts, use known merchant rules but never let AI infer a product from
+  // an address or an unfamiliar shop name.
+  if (input.allowAiFallback === false) return fallback(activeCategories);
 
   const aiResult = await classifyExpenseWithAi(context, activeCategories, `telegram:${input.telegramUserId}`);
   const aiCategory = aiResult ? categoryBySlug.get(aiResult.categorySlug) : undefined;
