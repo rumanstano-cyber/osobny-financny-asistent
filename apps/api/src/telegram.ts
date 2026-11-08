@@ -519,7 +519,9 @@ async function handleLoanText(ctx: Context, text: string): Promise<boolean> {
     return true;
   }
   if (decision.kind === 'ambiguous_loans') {
-    await ctx.reply('Pre túto osobu máš viac otvorených pôžičiek. Nič som nezapísal. Upresni, prosím, ktorú pôžičku splácaš; ak ich nevieš rozlíšiť, kontaktuj podporu.');
+    await ctx.reply(intent.repaymentShare === 'half'
+      ? 'Polovicu dlhu nemožno bezpečne určiť. Napíšte presnú sumu alebo určte konkrétnu pôžičku.'
+      : 'Pre túto osobu máš viac otvorených pôžičiek. Nič som nezapísal. Upresni, prosím, ktorú pôžičku splácaš; ak ich nevieš rozlíšiť, kontaktuj podporu.');
     return true;
   }
   if (decision.kind === 'overpayment') {
@@ -527,15 +529,16 @@ async function handleLoanText(ctx: Context, text: string): Promise<boolean> {
     return true;
   }
   let saved;
+  const resolvedIntent = decision.amountMinor === undefined ? intent : { ...intent, amountMinor: decision.amountMinor };
   try { saved = await recordLoanWrite(String(ctx.from.id), context, {
     chatId: String(ctx.chat.id), messageId: String(ctx.message.message_id),
     updateId: String(ctx.update.update_id), occurredAt: new Date(ctx.message.date * 1000).toISOString(),
-  }, intent, decision); } catch (error) {
+  }, resolvedIntent, decision); } catch (error) {
     if (!(error instanceof LoanWriteConflict)) throw error;
     await ctx.reply('Zostatok pôžičky sa medzitým zmenil. Zápis som nevykonal; skontroluj aktuálny stav a pošli správnu sumu.');
     return true;
   }
-  if (saved) await ctx.reply(loanSavedText(intent, saved.counterparty_name, Number(saved.remaining_minor)));
+  if (saved) await ctx.reply(loanSavedText(resolvedIntent, saved.counterparty_name, Number(saved.remaining_minor)));
   return true;
 }
 

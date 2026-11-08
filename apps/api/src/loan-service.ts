@@ -9,7 +9,7 @@ type LoanRow = { id: string; counterparty_id: string; direction: LoanDirection; 
 export type LoanContext = { userId: string; workspaceId: string };
 export type LoanEntry = { name: string; direction: LoanDirection; currencyCode: string; remainingMinor: number; dueOn: string | null };
 export type LoanSnapshot = { entries: LoanEntry[] };
-export type LoanDecision = { kind: 'ready'; counterpartyId: string | null; name: string | null }
+export type LoanDecision = { kind: 'ready'; counterpartyId: string | null; name: string | null; amountMinor?: number }
   | { kind: 'missing_name' }
   | { kind: 'missing_loan' }
   | { kind: 'ambiguous_loans' }
@@ -137,6 +137,11 @@ export function decideLoanWriteFromRows(intent: Exclude<LoanIntent, null | { kin
   if (matchingLoans.length > 1) return { kind: 'ambiguous_loans' };
   const balanceMinor = matchingLoans
     .reduce((sum, loan) => sum + Number(loan.original_minor) - Number(loan.repaid_minor), 0);
+  if (intent.repaymentShare === 'half') {
+    // A fractional cent is not a safely recordable repayment; request an exact amount.
+    if (balanceMinor < 2 || balanceMinor % 2 !== 0) return { kind: 'ambiguous_loans' };
+    return { kind: 'ready', counterpartyId: matches[0].id, name: null, amountMinor: balanceMinor / 2 };
+  }
   if (intent.amountMinor > balanceMinor) return { kind: 'overpayment', balanceMinor };
   return { kind: 'ready', counterpartyId: matches[0].id, name: null };
 }

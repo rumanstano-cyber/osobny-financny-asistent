@@ -90,6 +90,69 @@ test('Martin repayments keep the direction and do not reach the expense route', 
   assert.ok(loanClarification('vratil som 10 eur'));
 });
 
+test('Saša returning the full 30 euros resolves the existing lent loan, not an expense', () => {
+  const sentence = 'Saša mi vrátila 30 €.';
+  const intent = parseLoanIntent(sentence);
+  assert.deepEqual(intent, { kind: 'repayment', direction: 'lent', name: 'Saša', amountMinor: 3000, currencyCode: 'EUR', dueOn: null });
+  if (!intent || intent.kind !== 'repayment') throw new Error('Expected repayment');
+  const decision = decideLoanWriteFromRows(intent, [{ id: 'sasa', name: 'Saša' }], [{
+    id: 'loan', counterparty_id: 'sasa', direction: 'lent', original_minor: 3000, repaid_minor: 0,
+    currency_code: 'EUR', due_on: null, status: 'OPEN',
+  }]);
+  assert.deepEqual(decision, { kind: 'ready', counterpartyId: 'sasa', name: null });
+  assert.match(loanSavedText(intent, 'Saša', 0), /Pôžička je vyrovnaná/u);
+  assert.notEqual(parseLoanIntent(sentence), null);
+});
+
+test('repayment synonyms, gender, case and word order keep the cash-flow direction', () => {
+  for (const [sentence, direction, name, amountMinor] of [
+    ['Jano mi splatil 50 eur.', 'lent', 'Jano', 5000],
+    ['Peter mi poslal späť 20 €.', 'lent', 'Peter', 2000],
+    ['Vrátil som Martinovi 100 €.', 'borrowed', 'Martin', 10000],
+    ['Od Saši som dostal späť 30 eur.', 'lent', 'Saši', 3000],
+    ['Sasa mi vratila 30 eur.', 'lent', 'Sasa', 3000],
+  ] as const) {
+    const intent = parseLoanIntent(sentence);
+    assert.equal(intent?.kind, 'repayment', sentence);
+    if (!intent || intent.kind !== 'repayment') throw new Error(sentence);
+    assert.equal(intent.direction, direction, sentence);
+    assert.equal(intent.name, name, sentence);
+    assert.equal(intent.amountMinor, amountMinor, sentence);
+  }
+  assert.deepEqual(findPersonMatches('Saši', [{ id: 'a', name: 'Saša' }]), [{ id: 'a', name: 'Saša' }]);
+});
+
+test('half of one open debt is resolved from the actual balance, never guessed', () => {
+  const intent = parseLoanIntent('Eva mi vrátila polovicu dlhu.');
+  assert.equal(intent?.kind, 'repayment');
+  if (!intent || intent.kind !== 'repayment') throw new Error('Expected repayment');
+  assert.equal(intent.repaymentShare, 'half');
+  const person = [{ id: 'eva', name: 'Eva' }];
+  const loan = { id: 'a', counterparty_id: 'eva', direction: 'lent' as const,
+    original_minor: 3000, repaid_minor: 0, currency_code: 'EUR', due_on: null, status: 'OPEN' };
+  assert.deepEqual(decideLoanWriteFromRows(intent, person, [loan]), {
+    kind: 'ready', counterpartyId: 'eva', name: null, amountMinor: 1500,
+  });
+  assert.deepEqual(decideLoanWriteFromRows(intent, person, [{ ...loan, repaid_minor: 1000 }]), {
+    kind: 'ready', counterpartyId: 'eva', name: null, amountMinor: 1000,
+  });
+  assert.deepEqual(decideLoanWriteFromRows(intent, person, []), { kind: 'missing_loan' });
+  assert.deepEqual(decideLoanWriteFromRows(intent, person, [loan, { ...loan, id: 'b' }]), { kind: 'ambiguous_loans' });
+  assert.deepEqual(decideLoanWriteFromRows(intent, person, [{ ...loan, original_minor: 3001 }]), { kind: 'ambiguous_loans' });
+});
+
+test('same-name debts, wrong direction, overpayment and repeat-update SQL safety remain intact', () => {
+  const intent = parseLoanIntent('Saša mi vrátila 30 €.');
+  if (!intent || intent.kind !== 'repayment') throw new Error('Expected repayment');
+  const people = [{ id: 'one', name: 'Saša Nováková' }, { id: 'two', name: 'Saša Kováčová' }];
+  const loan = { id: 'a', counterparty_id: 'one', direction: 'lent' as const,
+    original_minor: 3000, repaid_minor: 0, currency_code: 'EUR', due_on: null, status: 'OPEN' };
+  assert.equal(decideLoanWriteFromRows(intent, people, [loan, { ...loan, id: 'b', counterparty_id: 'two' }]).kind, 'ambiguous');
+  assert.deepEqual(decideLoanWriteFromRows(intent, people, [{ ...loan, direction: 'borrowed' }]), { kind: 'missing_loan' });
+  assert.deepEqual(decideLoanWriteFromRows(intent, people, [{ ...loan, original_minor: 2000 }]), { kind: 'overpayment', balanceMinor: 2000 });
+  assert.match(loanMigration, /telegram_update_id text not null unique/u);
+});
+
 test('repayment decision refuses absent or multiple open Martin debts', () => {
   const intent = parseLoanIntent('vratil som Martinovi 10 eur');
   if (!intent || intent.kind !== 'repayment') throw new Error('Expected repayment');

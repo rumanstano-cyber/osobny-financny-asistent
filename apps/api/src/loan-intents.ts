@@ -2,7 +2,7 @@ import { findFinancialAmounts, parseFinancialMessage } from './finance-parser.js
 
 export type LoanDirection = 'lent' | 'borrowed';
 export type LoanIntent =
-  | { kind: 'principal' | 'repayment'; direction: LoanDirection; name: string | null; amountMinor: number; currencyCode: string; dueOn: string | null }
+  | { kind: 'principal' | 'repayment'; direction: LoanDirection; name: string | null; amountMinor: number; currencyCode: string; dueOn: string | null; repaymentShare?: 'half' }
   | { kind: 'status'; direction: LoanDirection | null; name: string | null }
   | null;
 
@@ -42,9 +42,15 @@ export function dativePerson(name: string): string {
 
 export function findPersonMatches(name: string, people: readonly { id: string; name: string }[]): { id: string; name: string }[] {
   const query = nameKey(name);
-  const exact = people.filter((person) => nameKey(person.name) === query);
+  const variants = (value: string): string[] => {
+    const key = nameKey(value);
+    // Compare only grammatical variants of an existing name; never invent a counterparty.
+    if (key.endsWith('a')) return [key, `${key.slice(0, -1)}i`, `${key.slice(0, -1)}y`];
+    return [key];
+  };
+  const exact = people.filter((person) => variants(person.name).includes(query));
   if (exact.length) return exact;
-  return people.filter((person) => nameKey(person.name).split(' ')[0] === query);
+  return people.filter((person) => variants(person.name.split(' ')[0]).includes(query));
 }
 
 function dueDate(text: string, now = new Date()): string | null {
@@ -98,16 +104,15 @@ const writePatterns: WritePattern[] = [
   rule('repayment', 'borrowed', 'dative', String.raw`(?:spl[áa]cal|splatil|uhradil|vyrovnal)\s+som\s+([\p{L}][\p{L}'-]*)\s+(?:pôžičku|pozicku)`),
   rule('repayment', 'borrowed', 'dative', String.raw`(?:spl[áa]cal|splatil|uhradil|vyrovnal)\s+som\s+${person}`),
   rule('repayment', 'borrowed', 'dative', String.raw`dal\s+som\s+${person}\s+späť`),
-  rule('repayment', 'lent', null, String.raw`${person}\s+mi\s+vr[áa]til(?:\s+(?:časť|pôžičku))?`),
-  rule('repayment', 'lent', null, String.raw`mi\s+${person}\s+vr[áa]til`),
-  rule('repayment', 'lent', null, String.raw`${person}\s+vr[áa]til`),
-  rule('repayment', 'lent', null, String.raw`${person}\s+mi\s+(?:splatil|uhradil)`),
-  rule('repayment', 'lent', null, String.raw`${person}\s+mi\s+dal\s+späť`),
-  rule('repayment', 'lent', 'genitive', String.raw`od\s+${person}\s+som\s+dostal\s+späť`),
-  rule('repayment', 'lent', null, String.raw`${person}\s+splatil\s+pôžičku`),
+  rule('repayment', 'lent', null, String.raw`${person}\s+mi\s+vr[áa]til[ao]?(?:\s+(?:časť|pôžičku))?`),
+  rule('repayment', 'lent', null, String.raw`mi\s+${person}\s+vr[áa]til[ao]?`),
+  rule('repayment', 'lent', null, String.raw`${person}\s+vr[áa]til[ao]?`),
+  rule('repayment', 'lent', null, String.raw`${person}\s+mi\s+(?:splatil[ao]?|uhradil[ao]?|poslal[ao]?\s+späť|dal[ao]?\s+späť)`),
+  rule('repayment', 'lent', 'genitive', String.raw`od\s+${person}\s+som\s+dostal[ao]?\s+späť`),
+  rule('repayment', 'lent', null, String.raw`${person}\s+splatil[ao]?\s+pôžičku`),
 ];
 
-const loanWords = /(?:dlž|dlh|požič|pôžič|pozick|vr[áa]til|vr[áa]ti[ťt]|spl[áa]cal|splatil|uhradil|vyrovnal)/iu;
+const loanWords = /(?:dlž|dlh|požič|pôžič|pozick|vr[áa]til|vr[áa]ti[ťt]|spl[áa]cal|splatil|uhradil|vyrovnal|poslal[ao]?\s+späť|dostal[ao]?\s+späť)/iu;
 const uncertainty = /\b(?:neviem|možno|asi|snáď|nič|nedlžím|nedlhuje|nepožičal|nevrátil)\b/iu;
 
 export function loanClarification(text: string): string | null {
@@ -129,15 +134,18 @@ export function parseLoanIntent(text: string, now = new Date()): LoanIntent {
   }
   if (uncertainty.test(input)) return null;
   const amountMatches = findFinancialAmounts(input);
-  if (amountMatches.length === 0) return null;
+  const halfMatch = amountMatches.length === 0 ? /\bpolovicu\s+dlhu\b/iu.exec(input) : null;
+  if (amountMatches.length === 0 && !halfMatch) return null;
   const amountMatch = amountMatches[0];
-  const head = input.slice(0, amountMatch.index) + input.slice(amountMatch.end);
+  const head = amountMatch
+    ? input.slice(0, amountMatch.index) + input.slice(amountMatch.end)
+    : input.slice(0, halfMatch!.index) + input.slice(halfMatch!.index + halfMatch![0].length);
   const [statement, ...tail] = head.split(/[,;]/u);
   if (tail.length && (!dueDate(input, now) || !/^\s*má\s+mi\s+ich\s+vrátiť\s+do\s+/iu.test(tail.join(',')))) return null;
   if (findFinancialAmounts(statement).length > 0) return null;
   const phrase = statement.trim().replace(/[.!?]+$/u, '').trim();
-  const parsed = parseFinancialMessage(input);
-  if (!parsed) return null;
+  const parsed = amountMatch ? parseFinancialMessage(input) : null;
+  if (amountMatch && !parsed) return null;
   for (const pattern of writePatterns) {
     const match = pattern.expression.exec(phrase);
     if (!match) continue;
@@ -146,11 +154,12 @@ export function parseLoanIntent(text: string, now = new Date()): LoanIntent {
     return {
       kind: pattern.kind, direction: pattern.direction,
       name: canonicalPerson(parsedName, pattern.nameCase),
-      amountMinor: parsed.amountMinor, currencyCode: parsed.currencyCode,
+      amountMinor: parsed?.amountMinor ?? 0, currencyCode: parsed?.currencyCode ?? 'EUR',
       dueOn: pattern.kind === 'principal' ? dueDate(input, now) : null,
+      ...(halfMatch && pattern.kind === 'repayment' ? { repaymentShare: 'half' as const } : {}),
     };
   }
-  if (/^požičal\s+som$/iu.test(phrase)) {
+  if (parsed && /^požičal\s+som$/iu.test(phrase)) {
     return { kind: 'principal', direction: 'lent', name: null, amountMinor: parsed.amountMinor, currencyCode: parsed.currencyCode, dueOn: dueDate(input, now) };
   }
   return null;
